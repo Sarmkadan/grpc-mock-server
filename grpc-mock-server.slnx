@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/grpc-mock-server/">
+    <Project Path="src/grpc-mock-server/GrpcMockServer.csproj" />
+  </Folder>
+  <Folder Name="/tests/" />
+  <Folder Name="/tests/grpc-mock-server.Tests/">
+    <Project Path="tests/grpc-mock-server.Tests/GrpcMockServer.Tests.csproj" />
+  </Folder>
+</Solution>
