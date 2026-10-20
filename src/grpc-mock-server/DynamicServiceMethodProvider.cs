@@ -1,0 +1,312 @@
+using System.Reflection;
+using Google.Protobuf;
+using Grpc.AspNetCore.Server.Model;
+using Grpc.Core;
+
+namespace GrpcMockServer;
+
+/// <summary>
+/// Registers gRPC service methods at runtime by implementing
+/// <see cref="IServiceMethodProvider{MockGrpcService}"/>. Each method registered in the
+/// <see cref="StubRegistry"/> is bound to a handler that evaluates stubs and records calls.
+/// No generated <c>ServiceBase</c> class is required.
+/// </summary>
+internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<MockGrpcService>
+{
+    private readonly StubRegistry _registry;
+    private readonly RequestLog _log;
+    private readonly GrpcMockOptions _options;
+
+    private static readonly MethodInfo BindMethod =
+        typeof(DynamicServiceMethodProvider)
+            .GetMethod(nameof(Bind), BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+    public DynamicServiceMethodProvider(StubRegistry registry, RequestLog log, GrpcMockOptions options)
+    {
+        _registry = registry ?? throw new ArgumentNullException(nameof(registry));
+        _log = log ?? throw new ArgumentNullException(nameof(log));
+        _options = options ?? throw new ArgumentNullException(nameof(options));
+    }
+
+    /// <inheritdoc />
+    public void OnServiceMethodDiscovery(ServiceMethodProviderContext<MockGrpcService> context)
+    {
+        foreach (var entry in _registry.Methods)
+        {
+            var generic = BindMethod.MakeGenericMethod(entry.RequestType, entry.ResponseType);
+            generic.Invoke(this, new object[] { context, entry });
+        }
+    }
+
+    private void Bind<TRequest, TResponse>(
+        ServiceMethodProviderContext<MockGrpcService> context,
+        MethodEntry entry)
+        where TRequest : class, IMessage<TRequest>, new()
+        where TResponse : class, IMessage<TResponse>, new()
+    {
+        var method = DynamicMethodFactory.CreateMethod<TRequest, TResponse>(
+            entry.FullMethodName, entry.Type);
+
+        var metadata = new List<object>();
+
+        switch (entry.Type)
+        {
+            case MethodType.Unary:
+                context.AddUnaryMethod(method, metadata, CreateUnaryHandler<TRequest, TResponse>(entry));
+                break;
+
+            case MethodType.ServerStreaming:
+                context.AddServerStreamingMethod(method, metadata, CreateServerStreamingHandler<TRequest, TResponse>(entry));
+                break;
+
+            case MethodType.ClientStreaming:
+                context.AddClientStreamingMethod(method, metadata, CreateClientStreamingHandler<TRequest, TResponse>(entry));
+                break;
+
+            case MethodType.DuplexStreaming:
+                context.AddDuplexStreamingMethod(method, metadata, CreateDuplexStreamingHandler<TRequest, TResponse>(entry));
+                break;
+        }
+    }
+
+    private UnaryServerMethod<MockGrpcService, TRequest, TResponse> CreateUnaryHandler<TRequest, TResponse>(
+        MethodEntry entry)
+        where TRequest : class, IMessage<TRequest>, new()
+        where TResponse : class, IMessage<TResponse>, new()
+    {
+        return async (_, request, context) =>
+        {
+            var headers = context.RequestHeaders;
+            var stub = _registry.FindMatch(entry.FullMethodName, request, headers);
+
+            if (stub is null)
+            {
+                RecordCall<TRequest>(entry, request, _registry.UnmatchedStatus, matched: false);
+                throw new RpcException(_registry.UnmatchedStatus);
+            }
+
+            if (stub.Delay > TimeSpan.Zero)
+            {
+                await Task.Delay(stub.Delay, context.CancellationToken);
+            }
+
+            if (stub.ResponseHeaders.Count > 0)
+            {
+                await context.WriteResponseHeadersAsync(stub.ResponseHeaders);
+            }
+
+            foreach (var trailer in stub.ResponseTrailers)
+            {
+                context.ResponseTrailers.Add(trailer);
+            }
+
+            var handler = (UnaryHandler<TRequest, TResponse>)stub.Handler;
+            var response = await handler(request, context);
+
+            RecordCall<TRequest>(entry, request, new Status(StatusCode.OK, string.Empty), matched: true);
+
+            return response;
+        };
+    }
+
+    private ServerStreamingServerMethod<MockGrpcService, TRequest, TResponse> CreateServerStreamingHandler<TRequest, TResponse>(
+        MethodEntry entry)
+        where TRequest : class, IMessage<TRequest>, new()
+        where TResponse : class, IMessage<TResponse>, new()
+    {
+        return async (_, request, responseStream, context) =>
+        {
+            var headers = context.RequestHeaders;
+            var stub = _registry.FindMatch(entry.FullMethodName, request, headers);
+
+            if (stub is null)
+            {
+                RecordCall<TRequest>(entry, request, _registry.UnmatchedStatus, matched: false);
+                throw new RpcException(_registry.UnmatchedStatus);
+            }
+
+            if (stub.Delay > TimeSpan.Zero)
+            {
+                await Task.Delay(stub.Delay, context.CancellationToken);
+            }
+
+            if (stub.ResponseHeaders.Count > 0)
+            {
+                await context.WriteResponseHeadersAsync(stub.ResponseHeaders);
+            }
+
+            foreach (var trailer in stub.ResponseTrailers)
+            {
+                context.ResponseTrailers.Add(trailer);
+            }
+
+            var handler = (ServerStreamingHandler<TRequest, TResponse>)stub.Handler;
+            await handler(request, responseStream, context);
+
+            RecordCall<TRequest>(entry, request, new Status(StatusCode.OK, string.Empty), matched: true);
+        };
+    }
+
+    private ClientStreamingServerMethod<MockGrpcService, TRequest, TResponse> CreateClientStreamingHandler<TRequest, TResponse>(
+        MethodEntry entry)
+        where TRequest : class, IMessage<TRequest>, new()
+        where TResponse : class, IMessage<TResponse>, new()
+    {
+        return async (_, requestStream, context) =>
+        {
+            var headers = context.RequestHeaders;
+
+            // For client streaming, read the first message or pass null for initial match.
+            TRequest? firstMessage = null;
+            if (await requestStream.MoveNext(context.CancellationToken))
+            {
+                firstMessage = requestStream.Current;
+            }
+
+            var stub = _registry.FindMatch(entry.FullMethodName, firstMessage, headers);
+
+            if (stub is null)
+            {
+                RecordCall<TRequest>(entry, firstMessage, _registry.UnmatchedStatus, matched: false);
+                throw new RpcException(_registry.UnmatchedStatus);
+            }
+
+            if (stub.Delay > TimeSpan.Zero)
+            {
+                await Task.Delay(stub.Delay, context.CancellationToken);
+            }
+
+            if (stub.ResponseHeaders.Count > 0)
+            {
+                await context.WriteResponseHeadersAsync(stub.ResponseHeaders);
+            }
+
+            foreach (var trailer in stub.ResponseTrailers)
+            {
+                context.ResponseTrailers.Add(trailer);
+            }
+
+            var handler = (ClientStreamingHandler<TRequest, TResponse>)stub.Handler;
+
+            // Wrap the stream so the handler sees the first message we already consumed.
+            var wrappedStream = new PrependedStreamReader<TRequest>(firstMessage, requestStream);
+            var response = await handler(wrappedStream, context);
+
+            RecordCall<TRequest>(entry, firstMessage, new Status(StatusCode.OK, string.Empty), matched: true);
+
+            return response;
+        };
+    }
+
+    private DuplexStreamingServerMethod<MockGrpcService, TRequest, TResponse> CreateDuplexStreamingHandler<TRequest, TResponse>(
+        MethodEntry entry)
+        where TRequest : class, IMessage<TRequest>, new()
+        where TResponse : class, IMessage<TResponse>, new()
+    {
+        return async (_, requestStream, responseStream, context) =>
+        {
+            var headers = context.RequestHeaders;
+
+            // For duplex streaming, read the first message or pass null for initial match.
+            TRequest? firstMessage = null;
+            if (await requestStream.MoveNext(context.CancellationToken))
+            {
+                firstMessage = requestStream.Current;
+            }
+
+            var stub = _registry.FindMatch(entry.FullMethodName, firstMessage, headers);
+
+            if (stub is null)
+            {
+                RecordCall<TRequest>(entry, firstMessage, _registry.UnmatchedStatus, matched: false);
+                throw new RpcException(_registry.UnmatchedStatus);
+            }
+
+            if (stub.Delay > TimeSpan.Zero)
+            {
+                await Task.Delay(stub.Delay, context.CancellationToken);
+            }
+
+            if (stub.ResponseHeaders.Count > 0)
+            {
+                await context.WriteResponseHeadersAsync(stub.ResponseHeaders);
+            }
+
+            foreach (var trailer in stub.ResponseTrailers)
+            {
+                context.ResponseTrailers.Add(trailer);
+            }
+
+            var handler = (DuplexStreamingHandler<TRequest, TResponse>)stub.Handler;
+
+            // Wrap the stream so the handler sees the first message we already consumed.
+            var wrappedStream = new PrependedStreamReader<TRequest>(firstMessage, requestStream);
+            await handler(wrappedStream, responseStream, context);
+
+            RecordCall<TRequest>(entry, firstMessage, new Status(StatusCode.OK, string.Empty), matched: true);
+        };
+    }
+
+    private void RecordCall<TRequest>(MethodEntry entry, TRequest? request, Status status, bool matched)
+        where TRequest : class, IMessage<TRequest>, new()
+    {
+        if (!_options.RecordRequests)
+        {
+            return;
+        }
+
+        var payloads = new List<ReadOnlyMemory<byte>>();
+        if (request is not null)
+        {
+            payloads.Add(DynamicMethodFactory.Serialize(request));
+        }
+
+        _log.Record(new RecordedCall(
+            entry.FullMethodName,
+            entry.Type,
+            new Metadata(),
+            payloads.AsReadOnly(),
+            status,
+            matched,
+            DateTimeOffset.UtcNow));
+    }
+
+    /// <summary>
+    /// Wraps an <see cref="IAsyncStreamReader{T}"/> to prepend a message that was already
+    /// consumed for stub matching in client/duplex streaming scenarios.
+    /// </summary>
+    private sealed class PrependedStreamReader<T> : IAsyncStreamReader<T>
+    {
+        private readonly IAsyncStreamReader<T> _inner;
+        private T? _prepended;
+        private bool _prependConsumed;
+
+        public PrependedStreamReader(T? prepended, IAsyncStreamReader<T> inner)
+        {
+            _prepended = prepended;
+            _prependConsumed = prepended is null;
+            _inner = inner;
+        }
+
+        public T Current { get; private set; } = default!;
+
+        public async Task<bool> MoveNext(CancellationToken cancellationToken)
+        {
+            if (!_prependConsumed)
+            {
+                _prependConsumed = true;
+                Current = _prepended!;
+                _prepended = default;
+                return true;
+            }
+
+            if (await _inner.MoveNext(cancellationToken))
+            {
+                Current = _inner.Current;
+                return true;
+            }
+
+            return false;
+        }
+    }
+}
