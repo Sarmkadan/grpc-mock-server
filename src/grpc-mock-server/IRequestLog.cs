@@ -69,7 +69,17 @@ public sealed record RecordedCall(
     /// <summary>Deserializes the first request payload as <typeparamref name="TRequest"/>.</summary>
     /// <typeparam name="TRequest">Request message type.</typeparam>
     public TRequest Request<TRequest>() where TRequest : class, Google.Protobuf.IMessage<TRequest>, new()
-        => throw new NotImplementedException();
+    {
+        if (RequestPayloads.Count == 0)
+        {
+            throw new InvalidOperationException("No request payload was recorded.");
+        }
+
+        var msg = new TRequest();
+        var bytes = RequestPayloads[0].ToArray();
+        msg.MergeFrom(new Google.Protobuf.CodedInputStream(bytes));
+        return msg;
+    }
 }
 
 /// <summary>Thrown when a request log verification fails.</summary>

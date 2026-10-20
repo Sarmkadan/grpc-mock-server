@@ -10,6 +10,7 @@ internal sealed class StubRegistry
 {
     private readonly object _lock = new();
     private readonly List<MethodEntry> _methods = new();
+    private readonly List<StubDefinition> _stubs = new();
     private Status _unmatchedStatus = new(StatusCode.Unimplemented, "No stub matched.");
 
     /// <summary>All registered method entries.</summary>
@@ -53,6 +54,25 @@ internal sealed class StubRegistry
         }
     }
 
+    /// <summary>Returns true if a method with the given name has been registered.</summary>
+    internal bool HasMethod(string fullMethodName)
+    {
+        lock (_lock)
+        {
+            return _methods.Any(m => m.FullMethodName == fullMethodName);
+        }
+    }
+
+    /// <summary>Registers a stub definition.</summary>
+    internal void AddStub(StubDefinition stub)
+    {
+        ArgumentNullException.ThrowIfNull(stub);
+        lock (_lock)
+        {
+            _stubs.Add(stub);
+        }
+    }
+
     /// <summary>
     /// Attempts to find a stub matching the incoming call.
     /// </summary>
@@ -62,16 +82,46 @@ internal sealed class StubRegistry
     /// <returns>The matched stub configuration, or <see langword="null"/> if nothing matched.</returns>
     public MatchedStub? FindMatch(string fullMethodName, object? request, Metadata headers)
     {
-        // Stub - will be implemented in a later task with the fluent builder.
+        lock (_lock)
+        {
+            // Evaluate stubs in priority desc, then registration order asc.
+            var candidates = _stubs
+                .Where(s => s.FullMethodName == fullMethodName && s.IsActive)
+                .OrderByDescending(s => s.Priority)
+                .ThenBy(s => s.RegistrationOrder);
+
+            foreach (var stub in candidates)
+            {
+                if (!stub.Matches(request, headers))
+                {
+                    continue;
+                }
+
+                if (!stub.TryConsume())
+                {
+                    continue;
+                }
+
+                return new MatchedStub
+                {
+                    Delay = stub.Delay,
+                    ResponseHeaders = stub.ResponseHeaders,
+                    ResponseTrailers = stub.ResponseTrailers,
+                    Handler = stub.Handler
+                };
+            }
+        }
+
         return null;
     }
 
-    /// <summary>Clears all registered methods.</summary>
+    /// <summary>Clears all registered methods and stubs.</summary>
     internal void Clear()
     {
         lock (_lock)
         {
             _methods.Clear();
+            _stubs.Clear();
         }
     }
 }
