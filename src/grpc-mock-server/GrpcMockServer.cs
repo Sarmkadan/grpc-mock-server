@@ -75,6 +75,8 @@ public sealed class GrpcMockServer : IAsyncDisposable, IDisposable
         ArgumentNullException.ThrowIfNull(configure);
 
         options ??= GrpcMockOptions.Default;
+        options.Validate();
+        options = options.Clone();
         var registry = new StubRegistry();
         var log = new RequestLog(options.MaxRecordedCalls);
 
