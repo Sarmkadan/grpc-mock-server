@@ -1,11 +1,14 @@
+using System.Net;
 using Grpc.Core;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace GrpcMockServer;
 
@@ -27,38 +30,43 @@ namespace GrpcMockServer;
 /// </example>
 public sealed class GrpcMockServer : IAsyncDisposable, IDisposable
 {
-    private readonly IHost _host;
-    private readonly TestServer? _testServer;
     private readonly StubRegistry _registry;
     private readonly RequestLog _log;
     private readonly GrpcMockOptions _options;
+    private readonly WebApplication _app;
+    private readonly Uri _baseAddress;
     private bool _disposed;
 
-    private GrpcMockServer(IHost host, TestServer? testServer, StubRegistry registry, RequestLog log, GrpcMockOptions options)
+    private GrpcMockServer(WebApplication app, Uri baseAddress, StubRegistry registry, RequestLog log, GrpcMockOptions options)
     {
-        _host = host;
-        _testServer = testServer;
+        _app = app;
+        _baseAddress = baseAddress;
         _registry = registry;
         _log = log;
         _options = options;
     }
 
     /// <summary>Base address the server is listening on (e.g. <c>http://127.0.0.1:54321</c>).</summary>
+    /// <exception cref="ObjectDisposedException">The server has been disposed.</exception>
     public Uri BaseAddress
     {
         get
         {
-            if (_testServer is not null)
-            {
-                return _testServer.BaseAddress;
-            }
-
-            return new Uri($"http://{_options.Host}:{_options.Port}");
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return _baseAddress;
         }
     }
 
     /// <summary>Recorded requests and verification API for this server instance.</summary>
-    public IRequestLog Requests => _log;
+    /// <exception cref="ObjectDisposedException">The server has been disposed.</exception>
+    public IRequestLog Requests
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return _log;
+        }
+    }
 
     /// <summary>
     /// Starts a mock server on a free loopback port and registers the stubs configured by <paramref name="configure"/>.
@@ -77,62 +85,66 @@ public sealed class GrpcMockServer : IAsyncDisposable, IDisposable
         options ??= GrpcMockOptions.Default;
         options.Validate();
         options = options.Clone();
+
         var registry = new StubRegistry();
         var log = new RequestLog(options.MaxRecordedCalls);
 
-        var mockBuilder = new GrpcMockBuilder(registry);
-        configure(mockBuilder);
+        configure(new GrpcMockBuilder(registry));
 
-        var hostBuilder = new HostBuilder()
-            .ConfigureWebHost(webHost =>
-            {
-                if (options.UseTestHost)
-                {
-                    webHost.UseTestServer();
-                }
-                else
-                {
-                    webHost.UseKestrel(k => k.ListenLocalhost(options.Port));
-                }
+        var builder = WebApplication.CreateSlimBuilder();
 
-                webHost.ConfigureServices(services =>
-                {
-                    services.AddGrpc(grpcOptions =>
-                    {
-                        if (options.MaxReceiveMessageSize.HasValue)
-                        {
-                            grpcOptions.MaxReceiveMessageSize = options.MaxReceiveMessageSize.Value;
-                        }
-                    });
-
-                    services.AddGrpcMockCore(registry, log, options);
-
-                    if (options.LoggerFactory is not null)
-                    {
-                        services.AddSingleton(options.LoggerFactory);
-                    }
-                });
-
-                webHost.Configure(app =>
-                {
-                    app.UseRouting();
-                    app.UseEndpoints(endpoints =>
-                    {
-                        endpoints.MapGrpcService<MockGrpcService>();
-                    });
-                });
-            });
-
-        var host = hostBuilder.Build();
-        await host.StartAsync(cancellationToken);
-
-        TestServer? testServer = null;
         if (options.UseTestHost)
         {
-            testServer = host.GetTestServer();
+            builder.WebHost.UseTestServer();
+        }
+        else
+        {
+            // "localhost" is accepted by Validate() but is not an IP literal, so map it explicitly.
+            var address = string.Equals(options.Host, "localhost", StringComparison.OrdinalIgnoreCase)
+                ? IPAddress.Loopback
+                : IPAddress.Parse(options.Host);
+
+            builder.WebHost.ConfigureKestrel(k => k.Listen(address, options.Port, l => l.Protocols = HttpProtocols.Http2));
         }
 
-        return new GrpcMockServer(host, testServer, registry, log, options);
+        builder.Services.AddGrpc(o =>
+        {
+            if (options.MaxReceiveMessageSize.HasValue)
+            {
+                o.MaxReceiveMessageSize = options.MaxReceiveMessageSize.Value;
+            }
+        });
+
+        if (options.LoggerFactory is not null)
+        {
+            builder.Services.AddSingleton(options.LoggerFactory);
+        }
+        else
+        {
+            builder.Logging.ClearProviders();
+        }
+
+        builder.Services.AddGrpcMockCore(registry, log, options);
+
+        var app = builder.Build();
+        app.MapGrpcService<MockGrpcService>();
+
+        try
+        {
+            await app.StartAsync(cancellationToken);
+        }
+        catch
+        {
+            await app.DisposeAsync();
+            throw;
+        }
+
+        var baseAddress = options.UseTestHost
+            ? new Uri("http://localhost")
+            : new Uri(app.Services.GetRequiredService<IServer>()
+                .Features.Get<IServerAddressesFeature>()!.Addresses.First());
+
+        return new GrpcMockServer(app, baseAddress, registry, log, options);
     }
 
     /// <summary>
@@ -163,9 +175,10 @@ public sealed class GrpcMockServer : IAsyncDisposable, IDisposable
     {
         var channelOptions = new GrpcChannelOptions();
 
-        if (_testServer is not null)
+        if (_options.UseTestHost)
         {
-            channelOptions.HttpHandler = _testServer.CreateHandler();
+            // UseTestServer() registers the TestServer as the IServer implementation.
+            channelOptions.HttpHandler = ((TestServer)_app.Services.GetRequiredService<IServer>()).CreateHandler();
         }
 
         configureOptions?.Invoke(channelOptions);
@@ -187,18 +200,10 @@ public sealed class GrpcMockServer : IAsyncDisposable, IDisposable
         }
 
         _disposed = true;
-        _host.Dispose();
+        await _app.StopAsync();
+        await _app.DisposeAsync();
     }
 
     /// <inheritdoc />
-    public void Dispose()
-    {
-        if (_disposed)
-        {
-            return;
-        }
-
-        _disposed = true;
-        _host.Dispose();
-    }
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 }
