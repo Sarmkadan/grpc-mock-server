@@ -110,6 +110,10 @@ public sealed class GrpcMockServer : IAsyncDisposable, IDisposable
 
         builder.Services.AddGrpc(o =>
         {
+            // Without this, gRPC answers undeclared methods itself (HTTP 200, grpc-status UNIMPLEMENTED) and
+            // the call never reaches UnmatchedCallMiddleware, so it would not be recorded.
+            o.IgnoreUnknownServices = true;
+
             if (options.MaxReceiveMessageSize.HasValue)
             {
                 o.MaxReceiveMessageSize = options.MaxReceiveMessageSize.Value;
@@ -129,6 +133,10 @@ public sealed class GrpcMockServer : IAsyncDisposable, IDisposable
 
         var app = builder.Build();
         app.MapGrpcService<MockGrpcService>();
+
+        // Calls to undeclared methods match no endpoint; answer them with a gRPC status instead of a 404.
+        var unmatched = new UnmatchedCallMiddleware(registry, log, options);
+        app.MapFallback("/{service}/{method}", unmatched.InvokeAsync);
 
         try
         {
