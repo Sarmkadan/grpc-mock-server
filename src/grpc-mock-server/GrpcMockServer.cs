@@ -213,7 +213,12 @@ public sealed class GrpcMockServer : IAsyncDisposable, IDisposable
     /// <summary>
     /// Creates a raw <see cref="CallInvoker"/> for scenarios where a generated client is not available.
     /// </summary>
-    public CallInvoker CreateCallInvoker() => CreateChannel().CreateCallInvoker();
+    /// <exception cref="ObjectDisposedException">The server has been disposed.</exception>
+    public CallInvoker CreateCallInvoker()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return CreateChannel().CreateCallInvoker();
+    }
 
     /// <inheritdoc />
     public async ValueTask DisposeAsync()

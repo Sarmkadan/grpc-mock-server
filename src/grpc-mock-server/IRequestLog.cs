@@ -72,7 +72,7 @@ public sealed record RecordedCall(
     {
         if (RequestPayloads.Count == 0)
         {
-            throw new InvalidOperationException("No request payload was recorded.");
+            throw new InvalidOperationException($"No request payload was recorded for {FullMethodName}.");
         }
 
         var parser = (Google.Protobuf.MessageParser<TRequest>)new TRequest().Descriptor.Parser;

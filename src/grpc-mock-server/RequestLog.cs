@@ -14,8 +14,10 @@ internal sealed class RequestLog : IRequestLog
 
     /// <summary>Creates a log that keeps at most <paramref name="maxRecordedCalls"/> calls.</summary>
     /// <param name="maxRecordedCalls">Upper bound on retained calls; the oldest are dropped first.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="maxRecordedCalls"/> is zero or negative.</exception>
     public RequestLog(int maxRecordedCalls)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxRecordedCalls);
         _maxRecordedCalls = maxRecordedCalls;
     }
 
@@ -48,6 +50,7 @@ internal sealed class RequestLog : IRequestLog
     /// <inheritdoc />
     public IReadOnlyList<RecordedCall> For(string fullMethodName)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fullMethodName);
         return All.Where(c => string.Equals(c.FullMethodName, fullMethodName, StringComparison.Ordinal)).ToArray();
     }
 
@@ -55,6 +58,7 @@ internal sealed class RequestLog : IRequestLog
     public IReadOnlyList<TRequest> RequestsFor<TRequest>(string fullMethodName)
         where TRequest : class, IMessage<TRequest>, new()
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fullMethodName);
         return For(fullMethodName)
             .Where(c => c.RequestPayloads.Count > 0)
             .Select(c => c.Request<TRequest>())
@@ -64,6 +68,9 @@ internal sealed class RequestLog : IRequestLog
     /// <inheritdoc />
     public void VerifyCalled(string fullMethodName, int expectedCount)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fullMethodName);
+        ArgumentOutOfRangeException.ThrowIfNegative(expectedCount);
+
         var snapshot = All;
         var actual = snapshot.Count(c => string.Equals(c.FullMethodName, fullMethodName, StringComparison.Ordinal));
         if (actual != expectedCount)
@@ -78,6 +85,7 @@ internal sealed class RequestLog : IRequestLog
     public void VerifyCalledWith<TRequest>(string fullMethodName, Func<TRequest, bool> predicate)
         where TRequest : class, IMessage<TRequest>, new()
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fullMethodName);
         ArgumentNullException.ThrowIfNull(predicate);
 
         var snapshot = All;
@@ -95,6 +103,8 @@ internal sealed class RequestLog : IRequestLog
     /// <inheritdoc />
     public void VerifyNotCalled(string fullMethodName)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fullMethodName);
+
         var snapshot = All;
         var actual = snapshot.Count(c => string.Equals(c.FullMethodName, fullMethodName, StringComparison.Ordinal));
         if (actual > 0)
