@@ -17,8 +17,7 @@ the server. No `ServiceBase` subclass, no hand-written fake service per test, no
 - **Failure injection** - any `StatusCode`, custom `RpcException`, delays, trailers
 - **Sequenced responses** - first call returns A, second returns B, then B repeats
 - **Header matching** - route on auth tokens, tenant ids, correlation ids
-- **Request verification** - `Requests.VerifyCalled("...", times: 1)`, `VerifyCalledWith<Req>(...)`
-- **Raw mode** - stub methods whose message types you do not have compiled (`byte[]` in/out)
+- **Request verification** - `Requests.VerifyCalled("...", expectedCount: 1)`, `VerifyCalledWith<Req>(...)`
 - **Zero network by default** - runs on `Microsoft.AspNetCore.TestHost`; flip a flag to bind a real port for cross-process or cross-language clients
 
 ## Quick start
@@ -446,7 +445,7 @@ Targets `net8.0`. Depends on `Grpc.AspNetCore.Server`, `Grpc.Net.Client` and `Go
 | Type | Purpose |
 |------|---------|
 | `GrpcMockServer` | Lifecycle: `StartAsync`, `Configure`, `Reset`, `CreateChannel`, `CreateCallInvoker`, dispose |
-| `IGrpcMockBuilder` | Entry point of the fluent API: `ForUnary`, `ForServerStreaming`, `ForClientStreaming`, `ForDuplexStreaming`, `ForRaw`, `OnUnmatched` |
+| `IGrpcMockBuilder` | Entry point of the fluent API: `ForUnary`, `ForServerStreaming`, `ForClientStreaming`, `ForDuplexStreaming`, `ForRaw` (not implemented yet), `OnUnmatched` |
 | `IUnaryStubBuilder<TReq, TRes>` and friends | Per-method stubs: `When`, `WithHeader`, `WithDelay`, `WithPriority`, `Times`, `Respond`, `Fail`, `Stream`, `Echo`, `Handle` |
 | `IRequestMatcher<TReq>` / `RequestMatcher` | Reusable, self-describing matchers: `Any`, `Where`, `Equals`, `All`, `AnyOf` |
 | `IRequestLog` / `RecordedCall` | Recorded calls and verification: `VerifyCalled`, `VerifyCalledWith`, `VerifyNotCalled`, `VerifyNoUnmatchedCalls` |
@@ -457,6 +456,176 @@ Targets `net8.0`. Depends on `Grpc.AspNetCore.Server`, `Grpc.Net.Client` and `Go
 gRPC only needs a `Method<TRequest, TResponse>` descriptor with marshallers to route a call. The server
 builds those descriptors at runtime from the full method name and the `IMessage<T>` types you already have
 in your client assembly, then registers a dynamic `ServerServiceDefinition`. Your protos stay untouched.
+
+## Reference
+
+This section describes the public surface exactly as the source implements it.
+
+### GrpcMockOptions
+
+Pass options as the second argument of `StartAsync`, or through the `configureOptions` callback of
+`AddGrpcMockServer`. `StartAsync` validates the options and then works on a copy, so changing the instance
+afterwards does not affect a running server. `Validate()` runs inside `StartAsync`; an invalid value throws
+`ArgumentException`, and `EnableReflection = true` throws `NotSupportedException`.
+
+| Property | Default | Meaning |
+|----------|---------|---------|
+| `UseTestHost` | `true` | `true` hosts the server with `Microsoft.AspNetCore.TestHost`, and `CreateChannel` bypasses the network. `false` listens on a real Kestrel socket over plaintext HTTP/2 (no TLS), so other processes and other-language clients can connect. |
+| `Port` | `0` | Port to bind when `UseTestHost` is `false`. Must be 0-65535. `0` picks a free port, and `BaseAddress` reports the port actually bound. Ignored in TestHost mode. |
+| `Host` | `"127.0.0.1"` | Address to bind when `UseTestHost` is `false`. Must be `localhost` or an IP literal. Ignored in TestHost mode. Keep it on loopback unless another machine must connect: the mock has no authentication. |
+| `RecordRequests` | `true` | When `false`, no calls are written to `Requests`, matched or unmatched, so verification sees an empty log. |
+| `MaxRecordedCalls` | `10_000` | Upper bound on calls kept in the log. Must be greater than 0. The oldest calls are dropped first. |
+| `LoggerFactory` | `null` | When set, the server logs a warning for each call to a method that was never declared. When `null`, the ASP.NET Core logging providers are cleared, so framework logs are dropped. |
+| `MaxReceiveMessageSize` | `null` | Largest inbound message in bytes. Must be greater than 0 when set. `null` keeps the gRPC default of 4 MB. |
+| `EnableReflection` | `false` | **Obsolete** and unsupported. Dynamic methods have no proto descriptors, so reflection cannot describe them. `true` makes `StartAsync` throw `NotSupportedException`. Leave it `false`; setting it also produces compiler warning CS0618. |
+
+`GrpcMockOptions.RealSocket(port, host)` returns options with `UseTestHost = false`. Use it when a client
+outside the test process, or written in another language, has to reach the server:
+
+```csharp
+await using var server = await MockServer.StartAsync(mock => mock
+    .ForUnary<GetUserRequest, GetUserResponse>("users.v1.UserService/GetUser")
+        .Respond(new GetUserResponse { Id = 42, Name = "Ada Lovelace" }),
+    GrpcMockOptions.RealSocket(port: 0));
+
+// BaseAddress reports the bound port, for example http://127.0.0.1:54321.
+Console.WriteLine(server.BaseAddress.Authority);
+```
+
+Then call it with `grpcurl` from a shell. Replace the port with the one printed above, or use a fixed
+`RealSocket(port: 50051)` for a server started by another process. `grpcurl` needs `-plaintext` because the
+socket has no TLS, and `-proto` because reflection is not available:
+
+```bash
+grpcurl -plaintext -import-path ./protos -proto users/v1/user.proto \
+    -d '{"id": 42}' 127.0.0.1:54321 users.v1.UserService/GetUser
+```
+
+### Matching rules
+
+For each call the server evaluates the stubs declared for that method, in this order:
+
+1. Sort by `WithPriority` value, highest first. The default priority is 0.
+2. Stubs with equal priority keep registration order. `Configure` appends, so its stubs come after the stubs
+   registered by `StartAsync`.
+3. The first stub whose matchers all pass handles the call. Later stubs are not evaluated.
+
+Matchers combine with logical AND. A stub matches only if every `When(predicate)`, every
+`When(IRequestMatcher<T>)` and every `WithHeader(...)` passes. Calling `When` twice requires both
+predicates to hold. Header matchers compare the first value of the named header, with the key matched
+case-insensitively. Binary headers (keys ending in `-bin`) never match a header matcher.
+
+`Times(n)` limits how often a stub may match. The counter decrements when the stub matches, before any delay,
+response or failure is applied, and the stub is removed when it reaches 0. `Times` requires a value greater
+than 0. A stub that has been used up no longer participates, so the next stub in order takes over.
+
+When no stub matches, the call fails with the status set by `OnUnmatched`. The default is
+`StatusCode.Unimplemented` with the detail `no stub matched`. `OnUnmatched` applies to every method, and it
+rejects `StatusCode.OK`. Undeclared methods get the same status. Every unmatched call is recorded with
+`Matched == false`.
+
+Streaming caveats:
+
+- **Unary and server-streaming:** matchers see the single request message.
+- **Client-streaming:** matchers see only the first message. If the client sends an empty stream, request
+  matchers are skipped and only header matchers apply, so a stub with `When` also matches an empty stream.
+- **Duplex-streaming:** `When` throws `NotSupportedException` when called, so use `WithHeader` only.
+- **Client-streaming and duplex:** the server waits for the first client message, or for the client to finish
+  the request stream, before it matches a stub. A client that waits for response headers before sending
+  anything will block.
+
+### Custom matchers
+
+`IRequestMatcher<in TRequest>` has two members: `Description`, which appears in verification failure messages,
+and `Matches`, which receives the deserialized request and the request headers. Implement it to share a rule
+between stubs or to give a complex rule a readable name:
+
+```csharp
+using Grpc.Core;
+using GrpcMockServer;
+
+public sealed class IdInRangeMatcher : IRequestMatcher<GetUserRequest>
+{
+    private readonly int _min;
+    private readonly int _max;
+
+    public IdInRangeMatcher(int min, int max)
+    {
+        _min = min;
+        _max = max;
+    }
+
+    public string Description => $"Id in [{_min}, {_max}]";
+
+    public bool Matches(GetUserRequest request, Metadata headers) =>
+        request.Id >= _min && request.Id <= _max
+        && headers.GetValue("x-tenant-id") == "acme";
+}
+```
+
+Use it with `When`, or combine it with the built-in helpers in `RequestMatcher`:
+
+- `RequestMatcher.Any<T>()` matches every request.
+- `RequestMatcher.Where(description, predicate)` wraps a predicate with a description.
+- `RequestMatcher.Equals(expected)` matches requests that are protobuf-equal to `expected`.
+- `RequestMatcher.All(...)` requires every child matcher to match. An empty list matches everything.
+- `RequestMatcher.AnyOf(...)` requires at least one child matcher to match. An empty list matches nothing.
+
+```csharp
+await using var server = await MockServer.StartAsync(mock => mock
+    .ForUnary<GetUserRequest, GetUserResponse>("users.v1.UserService/GetUser")
+        .When(RequestMatcher.AnyOf<GetUserRequest>(
+            RequestMatcher.Equals(new GetUserRequest { Id = 42 }),
+            new IdInRangeMatcher(1000, 1999)))
+        .Respond(r => new GetUserResponse { Id = r.Id, Name = "known user" }));
+```
+
+### Raw mode
+
+`ForRaw(fullMethodName, type)` is meant for methods whose message types the test assembly does not reference.
+Request and response bodies would be raw protobuf `byte[]`. **It is not implemented yet.** The method validates
+its arguments and then throws `NotImplementedException`, and the raw tests in the suite are skipped for that
+reason. Declare such methods with `ForUnary`, `ForServerStreaming`, `ForClientStreaming` or
+`ForDuplexStreaming` and the message types you have.
+
+### Dependency injection
+
+`AddGrpcMockServer` registers `GrpcMockOptions` (through `IOptions<GrpcMockOptions>`), the server and
+`IRequestLog` as singletons. The server starts the first time it is resolved, and the call blocks until startup
+completes. It is disposed with the service provider. Invalid options throw `OptionsValidationException` when
+`IOptions<GrpcMockOptions>` is resolved.
+
+```csharp
+using GrpcMockServer;
+using Microsoft.Extensions.DependencyInjection;
+using MockServer = GrpcMockServer.GrpcMockServer;
+
+var services = new ServiceCollection();
+services.AddGrpcMockServer(
+    mock => mock
+        .ForUnary<GetUserRequest, GetUserResponse>("users.v1.UserService/GetUser")
+            .Respond(new GetUserResponse { Id = 42, Name = "Ada Lovelace" }),
+    options => options.MaxRecordedCalls = 1_000);
+
+await using var provider = services.BuildServiceProvider();
+
+var server = provider.GetRequiredService<MockServer>();
+var requests = provider.GetRequiredService<IRequestLog>();
+var client = new UserService.UserServiceClient(server.CreateChannel());
+```
+
+### Limitations
+
+- **No reflection.** `EnableReflection` throws, so tools such as `grpcurl` need `-proto` files.
+- **Fixed method set.** After `StartAsync`, `Configure` can only add stubs for methods declared at startup.
+  Any other method throws `InvalidOperationException`.
+- **Raw stubs are not implemented.** `ForRaw` throws `NotImplementedException`.
+- **Duplex stubs match on headers only.** `When` is not supported there.
+- **Client-streaming request matchers see only the first message.**
+- **Header matching is for string headers only.** Keys ending in `-bin` are rejected by `WithHeader` and never
+  match. Only the first value of a repeated header is compared.
+- **Plaintext HTTP/2 in real-socket mode.** There is no TLS, and no authentication of any kind.
+- **Inbound size limit.** Messages larger than `MaxReceiveMessageSize` (default 4 MB) are rejected.
 
 ## Contributing
 
