@@ -64,6 +64,7 @@ internal abstract class StubBuilderBase<TRequest, TSelf> : IStubBuilder<TRequest
     public TSelf When(Func<TRequest, bool> predicate)
     {
         ArgumentNullException.ThrowIfNull(predicate);
+        OnRequestMatcherAdded();
         Matchers.Add(RequestMatcher.Where("predicate", predicate));
         return Self;
     }
@@ -72,8 +73,17 @@ internal abstract class StubBuilderBase<TRequest, TSelf> : IStubBuilder<TRequest
     public TSelf When(IRequestMatcher<TRequest> matcher)
     {
         ArgumentNullException.ThrowIfNull(matcher);
+        OnRequestMatcherAdded();
         Matchers.Add(matcher);
         return Self;
+    }
+
+    /// <summary>
+    /// Invoked before a request matcher is added by <c>When(...)</c>. Derived builders whose call shape
+    /// cannot evaluate request matchers override this to reject them. The default accepts every matcher.
+    /// </summary>
+    protected virtual void OnRequestMatcherAdded()
+    {
     }
 
     /// <inheritdoc />

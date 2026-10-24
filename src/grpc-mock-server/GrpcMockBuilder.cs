@@ -48,7 +48,8 @@ internal sealed class GrpcMockBuilder : IGrpcMockBuilder
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
-        throw new NotImplementedException();
+        _registry.RegisterMethod(fullMethodName, MethodType.DuplexStreaming, typeof(TRequest), typeof(TResponse));
+        return new DuplexStreamingStubBuilder<TRequest, TResponse>(this, _registry, fullMethodName);
     }
 
     /// <inheritdoc />
