@@ -75,10 +75,8 @@ public sealed record RecordedCall(
             throw new InvalidOperationException("No request payload was recorded.");
         }
 
-        var msg = new TRequest();
-        var bytes = RequestPayloads[0].ToArray();
-        msg.MergeFrom(new Google.Protobuf.CodedInputStream(bytes));
-        return msg;
+        var parser = (Google.Protobuf.MessageParser<TRequest>)new TRequest().Descriptor.Parser;
+        return parser.ParseFrom(RequestPayloads[0].Span);
     }
 }
 

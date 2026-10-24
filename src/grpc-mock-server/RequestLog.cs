@@ -1,6 +1,4 @@
-using System.Collections.Concurrent;
 using Google.Protobuf;
-using Grpc.Core;
 
 namespace GrpcMockServer;
 
@@ -10,31 +8,47 @@ namespace GrpcMockServer;
 /// </summary>
 internal sealed class RequestLog : IRequestLog
 {
-    private readonly ConcurrentQueue<RecordedCall> _calls = new();
-    private readonly int _maxCalls;
+    private readonly object _gate = new();
+    private readonly List<RecordedCall> _calls = new();
+    private readonly int _maxRecordedCalls;
 
-    public RequestLog(int maxCalls = 10_000)
+    /// <summary>Creates a log that keeps at most <paramref name="maxRecordedCalls"/> calls.</summary>
+    /// <param name="maxRecordedCalls">Upper bound on retained calls; the oldest are dropped first.</param>
+    public RequestLog(int maxRecordedCalls)
     {
-        _maxCalls = maxCalls;
+        _maxRecordedCalls = maxRecordedCalls;
     }
 
     /// <summary>Records a call. Drops oldest entries when the cap is exceeded.</summary>
+    /// <param name="call">Call to record.</param>
     internal void Record(RecordedCall call)
     {
-        _calls.Enqueue(call);
-        while (_calls.Count > _maxCalls)
+        lock (_gate)
         {
-            _calls.TryDequeue(out _);
+            _calls.Add(call);
+            while (_calls.Count > _maxRecordedCalls)
+            {
+                _calls.RemoveAt(0);
+            }
         }
     }
 
     /// <inheritdoc />
-    public IReadOnlyList<RecordedCall> All => _calls.ToArray();
+    public IReadOnlyList<RecordedCall> All
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _calls.ToArray();
+            }
+        }
+    }
 
     /// <inheritdoc />
     public IReadOnlyList<RecordedCall> For(string fullMethodName)
     {
-        return _calls.Where(c => c.FullMethodName == fullMethodName).ToArray();
+        return All.Where(c => string.Equals(c.FullMethodName, fullMethodName, StringComparison.Ordinal)).ToArray();
     }
 
     /// <inheritdoc />
@@ -43,20 +57,15 @@ internal sealed class RequestLog : IRequestLog
     {
         return For(fullMethodName)
             .Where(c => c.RequestPayloads.Count > 0)
-            .Select(c =>
-            {
-                var msg = new TRequest();
-                msg.MergeFrom(c.RequestPayloads[0].Span);
-                return msg;
-            })
+            .Select(c => c.Request<TRequest>())
             .ToArray();
     }
 
     /// <inheritdoc />
     public void VerifyCalled(string fullMethodName, int expectedCount)
     {
-        var snapshot = _calls.ToArray();
-        var actual = snapshot.Count(c => c.FullMethodName == fullMethodName);
+        var snapshot = All;
+        var actual = snapshot.Count(c => string.Equals(c.FullMethodName, fullMethodName, StringComparison.Ordinal));
         if (actual != expectedCount)
         {
             throw new GrpcMockVerificationException(
@@ -71,9 +80,9 @@ internal sealed class RequestLog : IRequestLog
     {
         ArgumentNullException.ThrowIfNull(predicate);
 
-        var snapshot = _calls.ToArray();
+        var snapshot = All;
         var found = snapshot
-            .Where(c => c.FullMethodName == fullMethodName && c.RequestPayloads.Count > 0)
+            .Where(c => string.Equals(c.FullMethodName, fullMethodName, StringComparison.Ordinal) && c.RequestPayloads.Count > 0)
             .Any(c => Deserialize<TRequest>(c.RequestPayloads[0]) is { } request && predicate(request));
         if (!found)
         {
@@ -86,8 +95,8 @@ internal sealed class RequestLog : IRequestLog
     /// <inheritdoc />
     public void VerifyNotCalled(string fullMethodName)
     {
-        var snapshot = _calls.ToArray();
-        var actual = snapshot.Count(c => c.FullMethodName == fullMethodName);
+        var snapshot = All;
+        var actual = snapshot.Count(c => string.Equals(c.FullMethodName, fullMethodName, StringComparison.Ordinal));
         if (actual > 0)
         {
             throw new GrpcMockVerificationException(
@@ -99,7 +108,7 @@ internal sealed class RequestLog : IRequestLog
     /// <inheritdoc />
     public void VerifyNoUnmatchedCalls()
     {
-        var snapshot = _calls.ToArray();
+        var snapshot = All;
         var unmatched = snapshot.Count(c => !c.Matched);
         if (unmatched > 0)
         {
@@ -141,8 +150,9 @@ internal sealed class RequestLog : IRequestLog
     /// <inheritdoc />
     public void Clear()
     {
-        while (_calls.TryDequeue(out _))
+        lock (_gate)
         {
+            _calls.Clear();
         }
     }
 }
