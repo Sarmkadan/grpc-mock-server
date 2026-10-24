@@ -156,13 +156,15 @@ internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<Mock
         {
             var headers = context.RequestHeaders;
 
-            // For client streaming, read the first message or pass null for initial match.
-            TRequest? firstMessage = null;
+            // Stubs are matched against the first message only (null for an empty stream); the rest of
+            // the stream is drained after a stub has matched, so the handler receives every message.
+            var requests = new List<TRequest>();
             if (await requestStream.MoveNext(context.CancellationToken))
             {
-                firstMessage = requestStream.Current;
+                requests.Add(requestStream.Current);
             }
 
+            var firstMessage = requests.Count > 0 ? requests[0] : null;
             var stub = _registry.FindMatch(fullMethodName, firstMessage, headers);
 
             if (stub is null)
@@ -186,11 +188,13 @@ internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<Mock
                 context.ResponseTrailers.Add(trailer);
             }
 
-            var handler = (ClientStreamingHandler<TRequest, TResponse>)stub.Handler;
+            while (await requestStream.MoveNext(context.CancellationToken))
+            {
+                requests.Add(requestStream.Current);
+            }
 
-            // Wrap the stream so the handler sees the first message we already consumed.
-            var wrappedStream = new PrependedStreamReader<TRequest>(firstMessage, requestStream);
-            var response = await handler(wrappedStream, context);
+            var handler = (ClientStreamingHandler<TRequest, TResponse>)stub.Handler;
+            var response = await handler(requests, context);
 
             RecordCall<TRequest>(fullMethodName, methodType, firstMessage, new Status(StatusCode.OK, string.Empty), matched: true);
 

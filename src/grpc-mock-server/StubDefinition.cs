@@ -38,7 +38,8 @@ internal sealed class StubDefinition
 
     /// <summary>
     /// Evaluates the request object and request headers. Returns true when the stub applies.
-    /// The request is null for client/duplex streaming calls that have not yet read a message.
+    /// The request is null for client/duplex streaming calls that have not yet read a message or whose stream
+    /// is empty; request matchers are then skipped and only header matchers apply.
     /// </summary>
     public required Func<object?, Metadata, bool> Matches { get; init; }
 

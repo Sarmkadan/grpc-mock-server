@@ -171,11 +171,21 @@ internal abstract class StubBuilderBase<TRequest, TSelf> : IStubBuilder<TRequest
         object? request,
         Metadata headers)
     {
-        foreach (var matcher in matchers)
+        // A null request means there is nothing to evaluate yet (client streaming before the first
+        // message, or an empty stream), so request matchers are skipped and only headers decide.
+        if (request is not null)
         {
-            if (request is not TRequest typed || !matcher.Matches(typed, headers))
+            if (request is not TRequest typed)
             {
                 return false;
+            }
+
+            foreach (var matcher in matchers)
+            {
+                if (!matcher.Matches(typed, headers))
+                {
+                    return false;
+                }
             }
         }
 

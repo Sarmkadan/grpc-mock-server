@@ -39,7 +39,8 @@ internal sealed class GrpcMockBuilder : IGrpcMockBuilder
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
-        throw new NotImplementedException();
+        _registry.RegisterMethod(fullMethodName, MethodType.ClientStreaming, typeof(TRequest), typeof(TResponse));
+        return new ClientStreamingStubBuilder<TRequest, TResponse>(this, _registry, fullMethodName);
     }
 
     /// <inheritdoc />

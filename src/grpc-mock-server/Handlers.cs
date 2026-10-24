@@ -12,9 +12,9 @@ internal delegate Task ServerStreamingHandler<TRequest, TResponse>(
     TRequest request, IServerStreamWriter<TResponse> responseStream, ServerCallContext context)
     where TRequest : class where TResponse : class;
 
-/// <summary>Client-streaming handler delegate.</summary>
+/// <summary>Client-streaming handler delegate. Receives every request message the client streamed.</summary>
 internal delegate Task<TResponse> ClientStreamingHandler<TRequest, TResponse>(
-    IAsyncStreamReader<TRequest> requestStream, ServerCallContext context)
+    IReadOnlyList<TRequest> requests, ServerCallContext context)
     where TRequest : class where TResponse : class;
 
 /// <summary>Duplex-streaming handler delegate.</summary>
