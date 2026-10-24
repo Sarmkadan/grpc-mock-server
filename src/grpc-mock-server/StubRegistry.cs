@@ -12,6 +12,7 @@ internal sealed class StubRegistry
     private readonly Dictionary<string, (MethodType Type, Type RequestType, Type ResponseType)> _methods =
         new(StringComparer.Ordinal);
     private readonly List<StubDefinition> _stubs = new();
+    private bool _sealed;
 
     /// <summary>Status returned when no stub matches an incoming call.</summary>
     public Status UnmatchedStatus { get; set; } = new(StatusCode.Unimplemented, "no stub matched");
@@ -42,9 +43,11 @@ internal sealed class StubRegistry
 
     /// <summary>
     /// Registers a method. Registering the same method again is a no-op; registering it with a
-    /// different <see cref="MethodType"/> throws.
+    /// different <see cref="MethodType"/> throws. After <see cref="Seal"/> only already-known methods are accepted.
     /// </summary>
-    /// <exception cref="InvalidOperationException">The method is already registered with another type.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// The method is already registered with another type, or the registry is sealed and the method is unknown.
+    /// </exception>
     public void RegisterMethod(string fullMethodName, MethodType type, Type requestType, Type responseType)
     {
         ArgumentNullException.ThrowIfNull(fullMethodName);
@@ -64,7 +67,27 @@ internal sealed class StubRegistry
                 return;
             }
 
+            if (_sealed)
+            {
+                var declared = string.Join(", ", _methods.Keys.OrderBy(k => k, StringComparer.Ordinal));
+                throw new InvalidOperationException(
+                    $"Method '{fullMethodName}' was not declared when the server started, so it cannot be routed. " +
+                    $"Declare new methods in StartAsync. Declared methods: [{declared}].");
+            }
+
             _methods[fullMethodName] = (type, requestType, responseType);
+        }
+    }
+
+    /// <summary>
+    /// Freezes the method set. Called once the server has started, because gRPC endpoints are built from
+    /// the method set at that point; methods added later could never be routed.
+    /// </summary>
+    public void Seal()
+    {
+        lock (_lock)
+        {
+            _sealed = true;
         }
     }
 
@@ -126,12 +149,11 @@ internal sealed class StubRegistry
         return null;
     }
 
-    /// <summary>Removes all registered methods and stubs.</summary>
-    public void Clear()
+    /// <summary>Removes all stub definitions. Registered methods are kept.</summary>
+    public void ClearStubs()
     {
         lock (_lock)
         {
-            _methods.Clear();
             _stubs.Clear();
         }
     }

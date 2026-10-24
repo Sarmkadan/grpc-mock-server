@@ -35,6 +35,7 @@ public sealed class GrpcMockServer : IAsyncDisposable, IDisposable
     private readonly GrpcMockOptions _options;
     private readonly WebApplication _app;
     private readonly Uri _baseAddress;
+    private readonly List<GrpcChannel> _channels = new();
     private bool _disposed;
 
     private GrpcMockServer(WebApplication app, Uri baseAddress, StubRegistry registry, RequestLog log, GrpcMockOptions options)
@@ -144,46 +145,61 @@ public sealed class GrpcMockServer : IAsyncDisposable, IDisposable
             : new Uri(app.Services.GetRequiredService<IServer>()
                 .Features.Get<IServerAddressesFeature>()!.Addresses.First());
 
+        // Endpoints are built from the declared method set when the host starts, so freeze it here.
+        registry.Seal();
+
         return new GrpcMockServer(app, baseAddress, registry, log, options);
     }
 
     /// <summary>
-    /// Adds or replaces stubs on an already running server. Useful for per-test arrangement
-    /// when a single server is shared across a test class.
+    /// Adds stubs on an already running server. Useful for per-test arrangement when a single
+    /// server is shared across a test class.
     /// </summary>
+    /// <remarks>
+    /// Only methods declared during <see cref="StartAsync"/> can be routed. Configuring a stub for a method
+    /// that was not declared at startup throws <see cref="InvalidOperationException"/>; add that method in
+    /// the <c>configure</c> callback passed to <see cref="StartAsync"/> instead.
+    /// </remarks>
     /// <param name="configure">Fluent stub configuration.</param>
+    /// <exception cref="InvalidOperationException">The configuration declares a method that was not declared at startup.</exception>
     public void Configure(Action<IGrpcMockBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
+        ObjectDisposedException.ThrowIf(_disposed, this);
         var builder = new GrpcMockBuilder(_registry);
         configure(builder);
     }
 
-    /// <summary>Removes all stubs and clears the request log.</summary>
+    /// <summary>Removes all stub definitions and clears the request log. Declared methods are kept.</summary>
     public void Reset()
     {
-        _registry.Clear();
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        _registry.ClearStubs();
         _log.Clear();
     }
 
     /// <summary>
     /// Creates a <see cref="GrpcChannel"/> pointed at this server. When the server runs in
     /// <see cref="GrpcMockOptions.UseTestHost"/> mode the channel bypasses the network entirely.
+    /// Channels created here are disposed together with the server.
     /// </summary>
     /// <param name="configureOptions">Optional channel customization.</param>
     public GrpcChannel CreateChannel(Action<GrpcChannelOptions>? configureOptions = null)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
         var channelOptions = new GrpcChannelOptions();
 
         if (_options.UseTestHost)
         {
-            // UseTestServer() registers the TestServer as the IServer implementation.
-            channelOptions.HttpHandler = ((TestServer)_app.Services.GetRequiredService<IServer>()).CreateHandler();
+            channelOptions.HttpHandler = _app.GetTestServer().CreateHandler();
         }
 
         configureOptions?.Invoke(channelOptions);
 
-        return GrpcChannel.ForAddress(BaseAddress, channelOptions);
+        var channel = GrpcChannel.ForAddress(BaseAddress, channelOptions);
+        _channels.Add(channel);
+        return channel;
     }
 
     /// <summary>
@@ -200,6 +216,14 @@ public sealed class GrpcMockServer : IAsyncDisposable, IDisposable
         }
 
         _disposed = true;
+
+        foreach (var channel in _channels)
+        {
+            channel.Dispose();
+        }
+
+        _channels.Clear();
+
         await _app.StopAsync();
         await _app.DisposeAsync();
     }

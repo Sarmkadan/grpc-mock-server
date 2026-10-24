@@ -15,7 +15,8 @@ dotnet format --verify-no-changes              # check formatting (CI does this)
 ## Architecture
 
 - `GrpcMockServer` - facade. Owns the ASP.NET Core host (TestHost by default, Kestrel on a real port
-  when `GrpcMockOptions.UseTestHost == false`), the stub registry and the request log.
+  when `GrpcMockOptions.UseTestHost == false`), the stub registry and the request log. The method set is sealed
+  after `StartAsync` (gRPC endpoints are built once), so `Configure` may only add stubs for methods declared at startup.
 - `IGrpcMockBuilder` + `I*StubBuilder<TReq,TRes>` - fluent configuration surface. Builders are
   immutable-ish accumulators; `Respond`/`Fail`/`Stream` finalize a stub and return to the root builder.
 - Stub registry (internal, to be implemented) - maps `package.Service/Method` to an ordered list of
