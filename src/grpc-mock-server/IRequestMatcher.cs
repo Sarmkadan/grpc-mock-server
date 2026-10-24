@@ -24,7 +24,7 @@ public static class RequestMatcher
 {
     /// <summary>Matches every request.</summary>
     /// <typeparam name="TRequest">Request message type.</typeparam>
-    public static IRequestMatcher<TRequest> Any<TRequest>() => throw new NotImplementedException();
+    public static IRequestMatcher<TRequest> Any<TRequest>() => new AnyMatcher<TRequest>();
 
     /// <summary>Wraps a predicate with a description.</summary>
     /// <typeparam name="TRequest">Request message type.</typeparam>
@@ -34,7 +34,7 @@ public static class RequestMatcher
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(description);
         ArgumentNullException.ThrowIfNull(predicate);
-        throw new NotImplementedException();
+        return new PredicateMatcher<TRequest>(description, predicate);
     }
 
     /// <summary>
@@ -47,18 +47,24 @@ public static class RequestMatcher
         where TRequest : Google.Protobuf.IMessage<TRequest>
     {
         ArgumentNullException.ThrowIfNull(expected);
-        throw new NotImplementedException();
+        return new EqualsMatcher<TRequest>(expected);
     }
 
     /// <summary>Combines matchers with logical AND.</summary>
     /// <typeparam name="TRequest">Request message type.</typeparam>
     /// <param name="matchers">Matchers that must all match.</param>
     public static IRequestMatcher<TRequest> All<TRequest>(params IRequestMatcher<TRequest>[] matchers)
-        => throw new NotImplementedException();
+    {
+        ArgumentNullException.ThrowIfNull(matchers);
+        return new AllMatcher<TRequest>(matchers.ToArray());
+    }
 
     /// <summary>Combines matchers with logical OR.</summary>
     /// <typeparam name="TRequest">Request message type.</typeparam>
     /// <param name="matchers">Matchers of which at least one must match.</param>
     public static IRequestMatcher<TRequest> AnyOf<TRequest>(params IRequestMatcher<TRequest>[] matchers)
-        => throw new NotImplementedException();
+    {
+        ArgumentNullException.ThrowIfNull(matchers);
+        return new AnyOfMatcher<TRequest>(matchers.ToArray());
+    }
 }
