@@ -7,7 +7,7 @@ namespace GrpcMockServer;
 /// Default implementation of <see cref="IGrpcMockBuilder"/> that accumulates stub definitions
 /// and method entries into a <see cref="StubRegistry"/>.
 /// </summary>
-internal sealed class GrpcMockBuilder : IGrpcMockBuilder
+internal sealed partial class GrpcMockBuilder : IGrpcMockBuilder
 {
     private readonly StubRegistry _registry;
 
@@ -21,6 +21,7 @@ internal sealed class GrpcMockBuilder : IGrpcMockBuilder
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
+        MethodNames.Validate(fullMethodName);
         _registry.RegisterMethod(fullMethodName, MethodType.Unary, typeof(TRequest), typeof(TResponse));
         return new UnaryStubBuilder<TRequest, TResponse>(this, _registry, fullMethodName);
     }
@@ -30,6 +31,7 @@ internal sealed class GrpcMockBuilder : IGrpcMockBuilder
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
+        MethodNames.Validate(fullMethodName);
         _registry.RegisterMethod(fullMethodName, MethodType.ServerStreaming, typeof(TRequest), typeof(TResponse));
         return new ServerStreamingStubBuilder<TRequest, TResponse>(this, _registry, fullMethodName);
     }
@@ -39,6 +41,7 @@ internal sealed class GrpcMockBuilder : IGrpcMockBuilder
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
+        MethodNames.Validate(fullMethodName);
         _registry.RegisterMethod(fullMethodName, MethodType.ClientStreaming, typeof(TRequest), typeof(TResponse));
         return new ClientStreamingStubBuilder<TRequest, TResponse>(this, _registry, fullMethodName);
     }
@@ -48,6 +51,7 @@ internal sealed class GrpcMockBuilder : IGrpcMockBuilder
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
+        MethodNames.Validate(fullMethodName);
         _registry.RegisterMethod(fullMethodName, MethodType.DuplexStreaming, typeof(TRequest), typeof(TResponse));
         return new DuplexStreamingStubBuilder<TRequest, TResponse>(this, _registry, fullMethodName);
     }
@@ -55,6 +59,7 @@ internal sealed class GrpcMockBuilder : IGrpcMockBuilder
     /// <inheritdoc />
     public IUnaryStubBuilder<byte[], byte[]> ForRaw(string fullMethodName, MethodType type = MethodType.Unary)
     {
+        MethodNames.Validate(fullMethodName);
         throw new NotImplementedException();
     }
 

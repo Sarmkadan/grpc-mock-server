@@ -11,8 +11,8 @@ namespace GrpcMockServer;
 /// <typeparam name="TResponse">Response message type.</typeparam>
 internal sealed class UnaryStubBuilder<TRequest, TResponse>
     : StubBuilderBase<TRequest, IUnaryStubBuilder<TRequest, TResponse>>, IUnaryStubBuilder<TRequest, TResponse>
-    where TRequest : class, IMessage<TRequest>, new()
-    where TResponse : class, IMessage<TResponse>, new()
+    where TRequest : class
+    where TResponse : class
 {
     /// <summary>
     /// Creates a unary stub builder bound to a method.
