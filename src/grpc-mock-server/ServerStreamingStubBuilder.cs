@@ -31,6 +31,7 @@ internal sealed class ServerStreamingStubBuilder<TRequest, TResponse>
     /// <inheritdoc />
     public IGrpcMockBuilder Stream(params TResponse[] responses)
     {
+        ThrowIfFinalized();
         ArgumentNullException.ThrowIfNull(responses);
         ServerStreamingHandler<TRequest, TResponse> handler = async (_, responseStream, _) =>
         {
@@ -45,6 +46,7 @@ internal sealed class ServerStreamingStubBuilder<TRequest, TResponse>
     /// <inheritdoc />
     public IGrpcMockBuilder Stream(Func<TRequest, IEnumerable<TResponse>> factory)
     {
+        ThrowIfFinalized();
         ArgumentNullException.ThrowIfNull(factory);
         ServerStreamingHandler<TRequest, TResponse> handler = async (request, responseStream, _) =>
         {
@@ -59,6 +61,7 @@ internal sealed class ServerStreamingStubBuilder<TRequest, TResponse>
     /// <inheritdoc />
     public IGrpcMockBuilder Stream(Func<TRequest, ServerCallContext, IAsyncEnumerable<TResponse>> factory)
     {
+        ThrowIfFinalized();
         ArgumentNullException.ThrowIfNull(factory);
         ServerStreamingHandler<TRequest, TResponse> handler = async (request, responseStream, context) =>
         {
@@ -73,6 +76,8 @@ internal sealed class ServerStreamingStubBuilder<TRequest, TResponse>
     /// <inheritdoc />
     public IGrpcMockBuilder StreamThenFail(StatusCode statusCode, params TResponse[] responses)
     {
+        ThrowIfFinalized();
+        ValidateFailureStatus(statusCode);
         ArgumentNullException.ThrowIfNull(responses);
         ServerStreamingHandler<TRequest, TResponse> handler = async (_, responseStream, _) =>
         {
@@ -89,6 +94,8 @@ internal sealed class ServerStreamingStubBuilder<TRequest, TResponse>
     /// <inheritdoc />
     public IGrpcMockBuilder Fail(StatusCode statusCode, string? detail = null)
     {
+        ThrowIfFinalized();
+        ValidateFailureStatus(statusCode);
         ServerStreamingHandler<TRequest, TResponse> handler = (_, _, _) =>
             throw new RpcException(new Status(statusCode, detail ?? string.Empty));
         return Register(handler);
@@ -96,7 +103,6 @@ internal sealed class ServerStreamingStubBuilder<TRequest, TResponse>
 
     private IGrpcMockBuilder Register(ServerStreamingHandler<TRequest, TResponse> handler)
     {
-        Registry.Add(Build(MethodType.ServerStreaming, typeof(TResponse), handler));
-        return Root;
+        return Complete(MethodType.ServerStreaming, typeof(TResponse), handler);
     }
 }

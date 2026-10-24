@@ -43,6 +43,7 @@ internal sealed class DuplexStreamingStubBuilder<TRequest, TResponse>
     /// <inheritdoc />
     public IGrpcMockBuilder Echo(Func<TRequest, TResponse> map)
     {
+        ThrowIfFinalized();
         ArgumentNullException.ThrowIfNull(map);
         DuplexStreamingHandler<TRequest, TResponse> handler = async (requestStream, responseStream, context) =>
         {
@@ -57,6 +58,7 @@ internal sealed class DuplexStreamingStubBuilder<TRequest, TResponse>
     /// <inheritdoc />
     public IGrpcMockBuilder Handle(Func<IAsyncStreamReader<TRequest>, IServerStreamWriter<TResponse>, ServerCallContext, Task> handler)
     {
+        ThrowIfFinalized();
         ArgumentNullException.ThrowIfNull(handler);
         DuplexStreamingHandler<TRequest, TResponse> duplexHandler = (requestStream, responseStream, context) =>
             handler(requestStream, responseStream, context);
@@ -66,6 +68,8 @@ internal sealed class DuplexStreamingStubBuilder<TRequest, TResponse>
     /// <inheritdoc />
     public IGrpcMockBuilder Fail(StatusCode statusCode, string? detail = null)
     {
+        ThrowIfFinalized();
+        ValidateFailureStatus(statusCode);
         DuplexStreamingHandler<TRequest, TResponse> handler = (_, _, _) =>
             throw new RpcException(new Status(statusCode, detail ?? string.Empty));
         return Register(handler);
@@ -73,7 +77,6 @@ internal sealed class DuplexStreamingStubBuilder<TRequest, TResponse>
 
     private IGrpcMockBuilder Register(DuplexStreamingHandler<TRequest, TResponse> handler)
     {
-        Registry.Add(Build(MethodType.DuplexStreaming, typeof(TResponse), handler));
-        return Root;
+        return Complete(MethodType.DuplexStreaming, typeof(TResponse), handler);
     }
 }

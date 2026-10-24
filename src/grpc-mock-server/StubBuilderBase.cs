@@ -57,12 +57,42 @@ internal abstract class StubBuilderBase<TRequest, TSelf> : IStubBuilder<TRequest
         FullMethodName = fullMethodName;
     }
 
+    /// <summary>True once a response finalizer has registered the stub; the builder then rejects every further call.</summary>
+    private bool _finalized;
+
     /// <summary>The concrete builder instance, returned from chaining steps.</summary>
     protected abstract TSelf Self { get; }
+
+    /// <summary>
+    /// Throws when a response finalizer has already registered this builder's stub.
+    /// Every public step calls this first so a finalized builder cannot be modified or registered twice.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The stub has already been finalized.</exception>
+    protected void ThrowIfFinalized()
+    {
+        if (_finalized)
+        {
+            throw new InvalidOperationException("Stub already finalized");
+        }
+    }
+
+    /// <summary>
+    /// Rejects status codes that cannot describe a failed call. Used by the <c>Fail</c> finalizers.
+    /// </summary>
+    /// <param name="statusCode">Status the stub would fail with.</param>
+    /// <exception cref="ArgumentException"><paramref name="statusCode"/> is <see cref="StatusCode.OK"/>.</exception>
+    protected static void ValidateFailureStatus(StatusCode statusCode)
+    {
+        if (statusCode == StatusCode.OK)
+        {
+            throw new ArgumentException("A failing stub cannot use StatusCode.OK; use a non-OK status code.", nameof(statusCode));
+        }
+    }
 
     /// <inheritdoc />
     public TSelf When(Func<TRequest, bool> predicate)
     {
+        ThrowIfFinalized();
         ArgumentNullException.ThrowIfNull(predicate);
         OnRequestMatcherAdded();
         Matchers.Add(RequestMatcher.Where("predicate", predicate));
@@ -72,6 +102,7 @@ internal abstract class StubBuilderBase<TRequest, TSelf> : IStubBuilder<TRequest
     /// <inheritdoc />
     public TSelf When(IRequestMatcher<TRequest> matcher)
     {
+        ThrowIfFinalized();
         ArgumentNullException.ThrowIfNull(matcher);
         OnRequestMatcherAdded();
         Matchers.Add(matcher);
@@ -89,7 +120,8 @@ internal abstract class StubBuilderBase<TRequest, TSelf> : IStubBuilder<TRequest
     /// <inheritdoc />
     public TSelf WithHeader(string key, string value)
     {
-        ArgumentNullException.ThrowIfNull(key);
+        ThrowIfFinalized();
+        ValidateHeaderKey(key);
         ArgumentNullException.ThrowIfNull(value);
         HeaderMatchers.Add((key, actual => string.Equals(actual, value, StringComparison.Ordinal)));
         return Self;
@@ -98,7 +130,8 @@ internal abstract class StubBuilderBase<TRequest, TSelf> : IStubBuilder<TRequest
     /// <inheritdoc />
     public TSelf WithHeader(string key, Func<string, bool> predicate)
     {
-        ArgumentNullException.ThrowIfNull(key);
+        ThrowIfFinalized();
+        ValidateHeaderKey(key);
         ArgumentNullException.ThrowIfNull(predicate);
         HeaderMatchers.Add((key, predicate));
         return Self;
@@ -107,6 +140,7 @@ internal abstract class StubBuilderBase<TRequest, TSelf> : IStubBuilder<TRequest
     /// <inheritdoc />
     public TSelf WithPriority(int priority)
     {
+        ThrowIfFinalized();
         Priority = priority;
         return Self;
     }
@@ -114,6 +148,12 @@ internal abstract class StubBuilderBase<TRequest, TSelf> : IStubBuilder<TRequest
     /// <inheritdoc />
     public TSelf WithDelay(TimeSpan delay)
     {
+        ThrowIfFinalized();
+        if (delay < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(delay), delay, "Delay must not be negative.");
+        }
+
         Delay = delay;
         return Self;
     }
@@ -121,6 +161,7 @@ internal abstract class StubBuilderBase<TRequest, TSelf> : IStubBuilder<TRequest
     /// <inheritdoc />
     public TSelf WithResponseHeaders(Metadata headers)
     {
+        ThrowIfFinalized();
         ArgumentNullException.ThrowIfNull(headers);
         ResponseHeaders = headers;
         return Self;
@@ -129,7 +170,18 @@ internal abstract class StubBuilderBase<TRequest, TSelf> : IStubBuilder<TRequest
     /// <inheritdoc />
     public TSelf WithResponseTrailers(Metadata trailers)
     {
+        ThrowIfFinalized();
         ArgumentNullException.ThrowIfNull(trailers);
+        foreach (var entry in trailers)
+        {
+            if (entry.Key.StartsWith("grpc-", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException(
+                    $"Trailer key '{entry.Key}' is reserved for gRPC; 'grpc-' keys cannot be set with WithResponseTrailers.",
+                    nameof(trailers));
+            }
+        }
+
         ResponseTrailers = trailers;
         return Self;
     }
@@ -137,8 +189,25 @@ internal abstract class StubBuilderBase<TRequest, TSelf> : IStubBuilder<TRequest
     /// <inheritdoc />
     public TSelf Times(int count)
     {
+        ThrowIfFinalized();
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(count);
         TimesLimit = count;
         return Self;
+    }
+
+    /// <summary>
+    /// Composes the accumulated stub, adds it to the registry and marks this builder finalized.
+    /// The flag is set only after <see cref="StubRegistry.Add"/> succeeds, so a rejected stub leaves the builder usable.
+    /// </summary>
+    /// <param name="type">gRPC method type.</param>
+    /// <param name="responseType">CLR type of the response message.</param>
+    /// <param name="handler">Typed response delegate, boxed.</param>
+    /// <returns>The root builder, for chaining back to method declarations.</returns>
+    protected IGrpcMockBuilder Complete(MethodType type, Type responseType, object handler)
+    {
+        Registry.Add(Build(type, responseType, handler));
+        _finalized = true;
+        return Root;
     }
 
     /// <summary>
@@ -173,6 +242,17 @@ internal abstract class StubBuilderBase<TRequest, TSelf> : IStubBuilder<TRequest
             MatcherDescriptions = descriptions,
             Handler = handler,
         };
+    }
+
+    private static void ValidateHeaderKey(string key)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        if (key.EndsWith("-bin", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                $"Header '{key}' is a binary ('-bin') header and cannot be matched by string value.",
+                nameof(key));
+        }
     }
 
     private static bool MatchesAll(

@@ -37,6 +37,7 @@ internal sealed class ClientStreamingStubBuilder<TRequest, TResponse>
     /// <inheritdoc />
     public IGrpcMockBuilder Respond(Func<IReadOnlyList<TRequest>, TResponse> factory)
     {
+        ThrowIfFinalized();
         ArgumentNullException.ThrowIfNull(factory);
         ClientStreamingHandler<TRequest, TResponse> handler = (requests, _) => Task.FromResult(factory(requests));
         return Register(handler);
@@ -45,6 +46,7 @@ internal sealed class ClientStreamingStubBuilder<TRequest, TResponse>
     /// <inheritdoc />
     public IGrpcMockBuilder Respond(TResponse response)
     {
+        ThrowIfFinalized();
         ArgumentNullException.ThrowIfNull(response);
         ClientStreamingHandler<TRequest, TResponse> handler = (_, _) => Task.FromResult(response);
         return Register(handler);
@@ -53,6 +55,8 @@ internal sealed class ClientStreamingStubBuilder<TRequest, TResponse>
     /// <inheritdoc />
     public IGrpcMockBuilder Fail(StatusCode statusCode, string? detail = null)
     {
+        ThrowIfFinalized();
+        ValidateFailureStatus(statusCode);
         ClientStreamingHandler<TRequest, TResponse> handler = (_, _) =>
             throw new RpcException(new Status(statusCode, detail ?? string.Empty));
         return Register(handler);
@@ -60,7 +64,6 @@ internal sealed class ClientStreamingStubBuilder<TRequest, TResponse>
 
     private IGrpcMockBuilder Register(ClientStreamingHandler<TRequest, TResponse> handler)
     {
-        Registry.Add(Build(MethodType.ClientStreaming, typeof(TResponse), handler));
-        return Root;
+        return Complete(MethodType.ClientStreaming, typeof(TResponse), handler);
     }
 }

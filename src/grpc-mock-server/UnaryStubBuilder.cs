@@ -31,6 +31,7 @@ internal sealed class UnaryStubBuilder<TRequest, TResponse>
     /// <inheritdoc />
     public IGrpcMockBuilder Respond(TResponse response)
     {
+        ThrowIfFinalized();
         ArgumentNullException.ThrowIfNull(response);
         UnaryHandler<TRequest, TResponse> handler = (_, _) => Task.FromResult(response);
         return Register(handler);
@@ -39,6 +40,7 @@ internal sealed class UnaryStubBuilder<TRequest, TResponse>
     /// <inheritdoc />
     public IGrpcMockBuilder Respond(Func<TRequest, TResponse> factory)
     {
+        ThrowIfFinalized();
         ArgumentNullException.ThrowIfNull(factory);
         UnaryHandler<TRequest, TResponse> handler = (request, _) => Task.FromResult(factory(request));
         return Register(handler);
@@ -47,6 +49,7 @@ internal sealed class UnaryStubBuilder<TRequest, TResponse>
     /// <inheritdoc />
     public IGrpcMockBuilder Respond(Func<TRequest, ServerCallContext, Task<TResponse>> factory)
     {
+        ThrowIfFinalized();
         ArgumentNullException.ThrowIfNull(factory);
         UnaryHandler<TRequest, TResponse> handler = (request, context) => factory(request, context);
         return Register(handler);
@@ -55,6 +58,8 @@ internal sealed class UnaryStubBuilder<TRequest, TResponse>
     /// <inheritdoc />
     public IGrpcMockBuilder Fail(StatusCode statusCode, string? detail = null)
     {
+        ThrowIfFinalized();
+        ValidateFailureStatus(statusCode);
         UnaryHandler<TRequest, TResponse> handler = (_, _) =>
             throw new RpcException(new Status(statusCode, detail ?? string.Empty));
         return Register(handler);
@@ -63,6 +68,7 @@ internal sealed class UnaryStubBuilder<TRequest, TResponse>
     /// <inheritdoc />
     public IGrpcMockBuilder Fail(RpcException exception)
     {
+        ThrowIfFinalized();
         ArgumentNullException.ThrowIfNull(exception);
         UnaryHandler<TRequest, TResponse> handler = (_, _) => throw exception;
         return Register(handler);
@@ -71,6 +77,7 @@ internal sealed class UnaryStubBuilder<TRequest, TResponse>
     /// <inheritdoc />
     public IGrpcMockBuilder RespondInSequence(params TResponse[] responses)
     {
+        ThrowIfFinalized();
         ArgumentNullException.ThrowIfNull(responses);
         if (responses.Length == 0)
         {
@@ -89,7 +96,6 @@ internal sealed class UnaryStubBuilder<TRequest, TResponse>
 
     private IGrpcMockBuilder Register(UnaryHandler<TRequest, TResponse> handler)
     {
-        Registry.Add(Build(MethodType.Unary, typeof(TResponse), handler));
-        return Root;
+        return Complete(MethodType.Unary, typeof(TResponse), handler);
     }
 }
