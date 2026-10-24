@@ -39,6 +39,20 @@ internal static class TestMethods
     /// <summary>Full wire-form name for <see cref="FeedItems"/>.</summary>
     public const string FeedItemsFullName = "e2e.v1.Feed/Items";
 
+    /// <summary>Client-streaming method <c>e2e.v1.Aggregate/Concat</c> with <see cref="StringValue"/> request and response.</summary>
+    public static readonly Method<StringValue, StringValue> Concat =
+        ClientStreaming<StringValue, StringValue>("e2e.v1.Aggregate", "Concat");
+
+    /// <summary>Full wire-form name for <see cref="Concat"/>.</summary>
+    public const string ConcatFullName = "e2e.v1.Aggregate/Concat";
+
+    /// <summary>Duplex-streaming method <c>e2e.v1.Echo/Stream</c> with <see cref="StringValue"/> request and response.</summary>
+    public static readonly Method<StringValue, StringValue> EchoStream =
+        DuplexStreaming<StringValue, StringValue>("e2e.v1.Echo", "Stream");
+
+    /// <summary>Full wire-form name for <see cref="EchoStream"/>.</summary>
+    public const string EchoStreamFullName = "e2e.v1.Echo/Stream";
+
     /// <summary>
     /// Builds a server-streaming <see cref="Method{TRequest,TResponse}"/> for the given service and method name.
     /// Marshallers are derived from each message type's protobuf parser, so no generated code is needed.
@@ -51,8 +65,43 @@ internal static class TestMethods
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
+        return Create<TRequest, TResponse>(MethodType.ServerStreaming, service, method);
+    }
+
+    /// <summary>
+    /// Builds a client-streaming <see cref="Method{TRequest,TResponse}"/> for the given service and method name.
+    /// </summary>
+    /// <typeparam name="TRequest">Request message type.</typeparam>
+    /// <typeparam name="TResponse">Response message type.</typeparam>
+    /// <param name="service">Fully qualified service name, e.g. <c>e2e.v1.Aggregate</c>.</param>
+    /// <param name="method">Method name within the service, e.g. <c>Concat</c>.</param>
+    public static Method<TRequest, TResponse> ClientStreaming<TRequest, TResponse>(string service, string method)
+        where TRequest : class, IMessage<TRequest>, new()
+        where TResponse : class, IMessage<TResponse>, new()
+    {
+        return Create<TRequest, TResponse>(MethodType.ClientStreaming, service, method);
+    }
+
+    /// <summary>
+    /// Builds a duplex-streaming <see cref="Method{TRequest,TResponse}"/> for the given service and method name.
+    /// </summary>
+    /// <typeparam name="TRequest">Request message type.</typeparam>
+    /// <typeparam name="TResponse">Response message type.</typeparam>
+    /// <param name="service">Fully qualified service name, e.g. <c>e2e.v1.Echo</c>.</param>
+    /// <param name="method">Method name within the service, e.g. <c>Stream</c>.</param>
+    public static Method<TRequest, TResponse> DuplexStreaming<TRequest, TResponse>(string service, string method)
+        where TRequest : class, IMessage<TRequest>, new()
+        where TResponse : class, IMessage<TResponse>, new()
+    {
+        return Create<TRequest, TResponse>(MethodType.DuplexStreaming, service, method);
+    }
+
+    private static Method<TRequest, TResponse> Create<TRequest, TResponse>(MethodType type, string service, string method)
+        where TRequest : class, IMessage<TRequest>, new()
+        where TResponse : class, IMessage<TResponse>, new()
+    {
         return new Method<TRequest, TResponse>(
-            MethodType.ServerStreaming,
+            type,
             service,
             method,
             MarshallerFor<TRequest>(),

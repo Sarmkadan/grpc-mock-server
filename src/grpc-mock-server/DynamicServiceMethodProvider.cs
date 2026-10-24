@@ -195,7 +195,7 @@ internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<Mock
             var handler = (ClientStreamingHandler<TRequest, TResponse>)stub.Handler;
             var response = await handler(requests, context);
 
-            RecordCall<TRequest>(fullMethodName, methodType, firstMessage, new Status(StatusCode.OK, string.Empty), matched: true);
+            RecordCall(fullMethodName, methodType, requests, new Status(StatusCode.OK, string.Empty), matched: true);
 
             return response;
         };
@@ -253,16 +253,18 @@ internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<Mock
     private void RecordCall<TRequest>(string fullMethodName, MethodType methodType, TRequest? request, Status status, bool matched)
         where TRequest : class, IMessage<TRequest>, new()
     {
+        RecordCall(fullMethodName, methodType, request is null ? Array.Empty<TRequest>() : new[] { request }, status, matched);
+    }
+
+    private void RecordCall<TRequest>(string fullMethodName, MethodType methodType, IReadOnlyList<TRequest> requests, Status status, bool matched)
+        where TRequest : class, IMessage<TRequest>, new()
+    {
         if (!_options.RecordRequests)
         {
             return;
         }
 
-        var payloads = new List<ReadOnlyMemory<byte>>();
-        if (request is not null)
-        {
-            payloads.Add(DynamicMethodFactory.Serialize(request));
-        }
+        var payloads = requests.Select(r => new ReadOnlyMemory<byte>(DynamicMethodFactory.Serialize(r))).ToList();
 
         _log.Record(new RecordedCall(
             fullMethodName,
