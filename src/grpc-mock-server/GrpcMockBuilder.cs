@@ -10,7 +10,6 @@ namespace GrpcMockServer;
 internal sealed class GrpcMockBuilder : IGrpcMockBuilder
 {
     private readonly StubRegistry _registry;
-    private int _nextOrder;
 
     public GrpcMockBuilder(StubRegistry registry)
     {
@@ -22,7 +21,7 @@ internal sealed class GrpcMockBuilder : IGrpcMockBuilder
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
-        EnsureMethodRegistered<TRequest, TResponse>(fullMethodName, MethodType.Unary);
+        _registry.RegisterMethod(fullMethodName, MethodType.Unary, typeof(TRequest), typeof(TResponse));
         return new UnaryStubBuilder<TRequest, TResponse>(this, fullMethodName);
     }
 
@@ -63,31 +62,7 @@ internal sealed class GrpcMockBuilder : IGrpcMockBuilder
         return this;
     }
 
-    internal int NextOrder() => _nextOrder++;
-
-    internal void AddStub(StubDefinition stub)
-    {
-        stub.Initialize();
-        _registry.AddStub(stub);
-    }
-
-    private void EnsureMethodRegistered<TRequest, TResponse>(string fullMethodName, MethodType type)
-        where TRequest : class, IMessage<TRequest>, new()
-        where TResponse : class, IMessage<TResponse>, new()
-    {
-        if (_registry.HasMethod(fullMethodName))
-        {
-            return;
-        }
-
-        _registry.AddMethod(new MethodEntry
-        {
-            FullMethodName = fullMethodName,
-            Type = type,
-            RequestType = typeof(TRequest),
-            ResponseType = typeof(TResponse)
-        });
-    }
+    internal void AddStub(StubDefinition stub) => _registry.Add(stub);
 }
 
 /// <summary>
@@ -103,6 +78,7 @@ internal sealed class UnaryStubBuilder<TRequest, TResponse>
     private readonly string _fullMethodName;
     private readonly List<Func<object, bool>> _predicates = new();
     private readonly List<(string Key, Func<string, bool> Predicate)> _headerMatchers = new();
+    private readonly List<string> _descriptions = new();
     private int _priority;
     private TimeSpan _delay;
     private Metadata _responseHeaders = Metadata.Empty;
@@ -120,6 +96,7 @@ internal sealed class UnaryStubBuilder<TRequest, TResponse>
     {
         ArgumentNullException.ThrowIfNull(predicate);
         _predicates.Add(obj => predicate((TRequest)obj));
+        _descriptions.Add("custom predicate");
         return this;
     }
 
@@ -128,6 +105,7 @@ internal sealed class UnaryStubBuilder<TRequest, TResponse>
     {
         ArgumentNullException.ThrowIfNull(matcher);
         _predicates.Add(obj => matcher.Matches((TRequest)obj, Metadata.Empty));
+        _descriptions.Add(matcher.Description);
         return this;
     }
 
@@ -135,6 +113,7 @@ internal sealed class UnaryStubBuilder<TRequest, TResponse>
     public IUnaryStubBuilder<TRequest, TResponse> WithHeader(string key, string value)
     {
         _headerMatchers.Add((key, v => v == value));
+        _descriptions.Add($"header '{key}' == '{value}'");
         return this;
     }
 
@@ -142,6 +121,7 @@ internal sealed class UnaryStubBuilder<TRequest, TResponse>
     public IUnaryStubBuilder<TRequest, TResponse> WithHeader(string key, Func<string, bool> predicate)
     {
         _headerMatchers.Add((key, predicate));
+        _descriptions.Add($"header '{key}' (custom predicate)");
         return this;
     }
 
@@ -237,19 +217,51 @@ internal sealed class UnaryStubBuilder<TRequest, TResponse>
 
     private IGrpcMockBuilder Register(Delegate handler)
     {
+        var predicates = _predicates.ToList();
+        var headerMatchers = _headerMatchers.ToList();
+
         _root.AddStub(new StubDefinition
         {
             FullMethodName = _fullMethodName,
+            Type = MethodType.Unary,
+            RequestType = typeof(TRequest),
+            ResponseType = typeof(TResponse),
             Priority = _priority,
+            RemainingTimes = _timesLimit,
             Delay = _delay,
             ResponseHeaders = _responseHeaders,
             ResponseTrailers = _responseTrailers,
-            TimesLimit = _timesLimit,
-            RegistrationOrder = _root.NextOrder(),
-            Handler = handler,
-            Predicates = _predicates.ToList().AsReadOnly(),
-            HeaderMatchers = _headerMatchers.ToList().AsReadOnly()
+            Matches = (request, headers) => Matches(predicates, headerMatchers, request, headers),
+            MatcherDescriptions = _descriptions.ToList().AsReadOnly(),
+            Handler = handler
         });
         return _root;
+    }
+
+    private static bool Matches(
+        IReadOnlyList<Func<object, bool>> predicates,
+        IReadOnlyList<(string Key, Func<string, bool> Predicate)> headerMatchers,
+        object? request,
+        Metadata headers)
+    {
+        foreach (var predicate in predicates)
+        {
+            if (request is null || !predicate(request))
+            {
+                return false;
+            }
+        }
+
+        foreach (var (key, valuePredicate) in headerMatchers)
+        {
+            var entry = headers.FirstOrDefault(e =>
+                string.Equals(e.Key, key, StringComparison.OrdinalIgnoreCase));
+            if (entry is null || !valuePredicate(entry.Value))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

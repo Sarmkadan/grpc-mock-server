@@ -4,102 +4,50 @@ namespace GrpcMockServer;
 
 /// <summary>
 /// Internal representation of a single stub registered via the fluent builder.
-/// Holds matching predicates, response configuration and lifetime tracking.
+/// Holds the method signature, the matching predicate, the response configuration and
+/// the remaining-use counter.
 /// </summary>
 internal sealed class StubDefinition
 {
-    private readonly object _lock = new();
-    private int _remaining;
-
     /// <summary>Full gRPC method name in the form <c>package.Service/Method</c>.</summary>
     public required string FullMethodName { get; init; }
+
+    /// <summary>gRPC method type (Unary, ServerStreaming, etc.).</summary>
+    public required MethodType Type { get; init; }
+
+    /// <summary>CLR type of the request message.</summary>
+    public required Type RequestType { get; init; }
+
+    /// <summary>CLR type of the response message.</summary>
+    public required Type ResponseType { get; init; }
 
     /// <summary>Priority for evaluation order; higher wins.</summary>
     public int Priority { get; init; }
 
+    /// <summary>Remaining matches before the stub is removed; null means unlimited.</summary>
+    public int? RemainingTimes { get; set; }
+
     /// <summary>Artificial delay before responding.</summary>
     public TimeSpan Delay { get; init; }
 
-    /// <summary>Response headers (initial metadata).</summary>
-    public Metadata ResponseHeaders { get; init; } = Metadata.Empty;
+    /// <summary>Response headers (initial metadata); null when none were configured.</summary>
+    public Metadata? ResponseHeaders { get; init; }
 
-    /// <summary>Response trailers.</summary>
-    public Metadata ResponseTrailers { get; init; } = Metadata.Empty;
+    /// <summary>Response trailers; null when none were configured.</summary>
+    public Metadata? ResponseTrailers { get; init; }
 
-    /// <summary>Max number of times this stub may match; null means unlimited.</summary>
-    public int? TimesLimit { get; init; }
+    /// <summary>
+    /// Evaluates the request object and request headers. Returns true when the stub applies.
+    /// The request is null for client/duplex streaming calls that have not yet read a message.
+    /// </summary>
+    public required Func<object?, Metadata, bool> Matches { get; init; }
 
-    /// <summary>Order this stub was registered; used as tiebreaker after priority.</summary>
-    public int RegistrationOrder { get; init; }
+    /// <summary>Descriptions of each matcher, used in verification diagnostics.</summary>
+    public IReadOnlyList<string> MatcherDescriptions { get; init; } = Array.Empty<string>();
 
-    /// <summary>The handler delegate invoked when the stub matches.</summary>
-    public required Delegate Handler { get; init; }
-
-    /// <summary>Request predicates; all must match for the stub to fire.</summary>
-    public IReadOnlyList<Func<object, bool>> Predicates { get; init; } = Array.Empty<Func<object, bool>>();
-
-    /// <summary>Header matchers; all must match.</summary>
-    public IReadOnlyList<(string Key, Func<string, bool> Predicate)> HeaderMatchers { get; init; } =
-        Array.Empty<(string, Func<string, bool>)>();
-
-    /// <summary>Initializes the remaining counter from the limit.</summary>
-    public void Initialize()
-    {
-        _remaining = TimesLimit ?? int.MaxValue;
-    }
-
-    /// <summary>Returns true if the stub is still active (has remaining invocations).</summary>
-    public bool IsActive
-    {
-        get
-        {
-            lock (_lock)
-            {
-                return _remaining > 0;
-            }
-        }
-    }
-
-    /// <summary>Attempts to consume one invocation. Returns false if exhausted.</summary>
-    public bool TryConsume()
-    {
-        lock (_lock)
-        {
-            if (_remaining <= 0)
-            {
-                return false;
-            }
-
-            if (TimesLimit.HasValue)
-            {
-                _remaining--;
-            }
-
-            return true;
-        }
-    }
-
-    /// <summary>Checks whether the request and headers satisfy all predicates.</summary>
-    public bool Matches(object? request, Metadata headers)
-    {
-        foreach (var predicate in Predicates)
-        {
-            if (request is null || !predicate(request))
-            {
-                return false;
-            }
-        }
-
-        foreach (var (key, valuePredicate) in HeaderMatchers)
-        {
-            var entry = headers.FirstOrDefault(e =>
-                string.Equals(e.Key, key, StringComparison.OrdinalIgnoreCase));
-            if (entry is null || !valuePredicate(entry.Value))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
+    /// <summary>
+    /// The typed response delegate, boxed. The service binder casts it to the handler delegate
+    /// that matches <see cref="Type"/>.
+    /// </summary>
+    public required object Handler { get; init; }
 }

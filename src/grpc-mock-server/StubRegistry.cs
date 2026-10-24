@@ -3,120 +3,131 @@ using Grpc.Core;
 namespace GrpcMockServer;
 
 /// <summary>
-/// Thread-safe registry holding all configured stubs. Methods are evaluated in priority order
-/// and the first match wins.
+/// Thread-safe registry holding the registered methods and their stubs. Stubs are evaluated
+/// by priority (highest first), then by registration order; the first match wins.
 /// </summary>
 internal sealed class StubRegistry
 {
     private readonly object _lock = new();
-    private readonly List<MethodEntry> _methods = new();
+    private readonly Dictionary<string, (MethodType Type, Type RequestType, Type ResponseType)> _methods =
+        new(StringComparer.Ordinal);
     private readonly List<StubDefinition> _stubs = new();
-    private Status _unmatchedStatus = new(StatusCode.Unimplemented, "No stub matched.");
-
-    /// <summary>All registered method entries.</summary>
-    public IReadOnlyList<MethodEntry> Methods
-    {
-        get
-        {
-            lock (_lock)
-            {
-                return _methods.ToList().AsReadOnly();
-            }
-        }
-    }
 
     /// <summary>Status returned when no stub matches an incoming call.</summary>
-    public Status UnmatchedStatus
+    public Status UnmatchedStatus { get; set; } = new(StatusCode.Unimplemented, "no stub matched");
+
+    /// <summary>Snapshot of every registered method, keyed by full method name.</summary>
+    public IReadOnlyDictionary<string, (MethodType Type, Type RequestType, Type ResponseType)> Methods
     {
         get
         {
             lock (_lock)
             {
-                return _unmatchedStatus;
+                return new Dictionary<string, (MethodType Type, Type RequestType, Type ResponseType)>(_methods);
             }
         }
-        set
+    }
+
+    /// <summary>Distinct full method names that have been registered.</summary>
+    public IReadOnlyCollection<string> RegisteredMethods
+    {
+        get
         {
             lock (_lock)
             {
-                _unmatchedStatus = value;
+                return _methods.Keys.ToList().AsReadOnly();
             }
-        }
-    }
-
-    /// <summary>Registers a method entry.</summary>
-    internal void AddMethod(MethodEntry entry)
-    {
-        ArgumentNullException.ThrowIfNull(entry);
-        lock (_lock)
-        {
-            _methods.Add(entry);
-        }
-    }
-
-    /// <summary>Returns true if a method with the given name has been registered.</summary>
-    internal bool HasMethod(string fullMethodName)
-    {
-        lock (_lock)
-        {
-            return _methods.Any(m => m.FullMethodName == fullMethodName);
-        }
-    }
-
-    /// <summary>Registers a stub definition.</summary>
-    internal void AddStub(StubDefinition stub)
-    {
-        ArgumentNullException.ThrowIfNull(stub);
-        lock (_lock)
-        {
-            _stubs.Add(stub);
         }
     }
 
     /// <summary>
-    /// Attempts to find a stub matching the incoming call.
+    /// Registers a method. Registering the same method again is a no-op; registering it with a
+    /// different <see cref="MethodType"/> throws.
     /// </summary>
-    /// <param name="fullMethodName">Full gRPC method name.</param>
-    /// <param name="request">Deserialized request message (null for client/duplex streaming initial match).</param>
-    /// <param name="headers">Request headers.</param>
-    /// <returns>The matched stub configuration, or <see langword="null"/> if nothing matched.</returns>
-    public MatchedStub? FindMatch(string fullMethodName, object? request, Metadata headers)
+    /// <exception cref="InvalidOperationException">The method is already registered with another type.</exception>
+    public void RegisterMethod(string fullMethodName, MethodType type, Type requestType, Type responseType)
+    {
+        ArgumentNullException.ThrowIfNull(fullMethodName);
+        ArgumentNullException.ThrowIfNull(requestType);
+        ArgumentNullException.ThrowIfNull(responseType);
+
+        lock (_lock)
+        {
+            if (_methods.TryGetValue(fullMethodName, out var existing))
+            {
+                if (existing.Type != type)
+                {
+                    throw new InvalidOperationException(
+                        $"Method '{fullMethodName}' is already registered as {existing.Type}; cannot register it as {type}.");
+                }
+
+                return;
+            }
+
+            _methods[fullMethodName] = (type, requestType, responseType);
+        }
+    }
+
+    /// <summary>Registers a stub, along with its method if it is not yet known.</summary>
+    /// <exception cref="InvalidOperationException">The method is already registered with another type.</exception>
+    public void Add(StubDefinition stub)
+    {
+        ArgumentNullException.ThrowIfNull(stub);
+
+        lock (_lock)
+        {
+            RegisterMethod(stub.FullMethodName, stub.Type, stub.RequestType, stub.ResponseType);
+            _stubs.Add(stub);
+        }
+    }
+
+    /// <summary>Returns the stubs for a method in evaluation order (priority desc, then registration order).</summary>
+    public IReadOnlyList<StubDefinition> GetStubs(string fullMethodName)
     {
         lock (_lock)
         {
-            // Evaluate stubs in priority desc, then registration order asc.
-            var candidates = _stubs
-                .Where(s => s.FullMethodName == fullMethodName && s.IsActive)
-                .OrderByDescending(s => s.Priority)
-                .ThenBy(s => s.RegistrationOrder);
+            return OrderedStubsLocked(fullMethodName).AsReadOnly();
+        }
+    }
 
-            foreach (var stub in candidates)
+    /// <summary>
+    /// Finds the first stub for the method whose <see cref="StubDefinition.Matches"/> accepts the call.
+    /// A matched stub with a <see cref="StubDefinition.RemainingTimes"/> count is decremented, and
+    /// removed when the count reaches zero.
+    /// </summary>
+    /// <param name="fullMethodName">Full gRPC method name.</param>
+    /// <param name="request">Request message, or null for a streaming call that has not read one yet.</param>
+    /// <param name="headers">Request headers.</param>
+    /// <returns>The matched stub, or <see langword="null"/> if nothing matched.</returns>
+    public StubDefinition? FindMatch(string fullMethodName, object? request, Metadata headers)
+    {
+        lock (_lock)
+        {
+            foreach (var stub in OrderedStubsLocked(fullMethodName))
             {
-                if (!stub.Matches(request, headers))
+                if (stub.RemainingTimes is <= 0 || !stub.Matches(request, headers))
                 {
                     continue;
                 }
 
-                if (!stub.TryConsume())
+                if (stub.RemainingTimes is { } remaining)
                 {
-                    continue;
+                    stub.RemainingTimes = remaining - 1;
+                    if (stub.RemainingTimes == 0)
+                    {
+                        _stubs.Remove(stub);
+                    }
                 }
 
-                return new MatchedStub
-                {
-                    Delay = stub.Delay,
-                    ResponseHeaders = stub.ResponseHeaders,
-                    ResponseTrailers = stub.ResponseTrailers,
-                    Handler = stub.Handler
-                };
+                return stub;
             }
         }
 
         return null;
     }
 
-    /// <summary>Clears all registered methods and stubs.</summary>
-    internal void Clear()
+    /// <summary>Removes all registered methods and stubs.</summary>
+    public void Clear()
     {
         lock (_lock)
         {
@@ -124,4 +135,10 @@ internal sealed class StubRegistry
             _stubs.Clear();
         }
     }
+
+    private List<StubDefinition> OrderedStubsLocked(string fullMethodName) =>
+        _stubs
+            .Where(s => s.FullMethodName == fullMethodName)
+            .OrderByDescending(s => s.Priority)
+            .ToList();
 }

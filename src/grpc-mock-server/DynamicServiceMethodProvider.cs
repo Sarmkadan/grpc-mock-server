@@ -31,57 +31,57 @@ internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<Mock
     /// <inheritdoc />
     public void OnServiceMethodDiscovery(ServiceMethodProviderContext<MockGrpcService> context)
     {
-        foreach (var entry in _registry.Methods)
+        foreach (var (fullMethodName, (type, requestType, responseType)) in _registry.Methods)
         {
-            var generic = BindMethod.MakeGenericMethod(entry.RequestType, entry.ResponseType);
-            generic.Invoke(this, new object[] { context, entry });
+            var generic = BindMethod.MakeGenericMethod(requestType, responseType);
+            generic.Invoke(this, new object[] { context, fullMethodName, type });
         }
     }
 
     private void Bind<TRequest, TResponse>(
         ServiceMethodProviderContext<MockGrpcService> context,
-        MethodEntry entry)
+        string fullMethodName, MethodType methodType)
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
         var method = DynamicMethodFactory.CreateMethod<TRequest, TResponse>(
-            entry.FullMethodName, entry.Type);
+            fullMethodName, methodType);
 
         var metadata = new List<object>();
 
-        switch (entry.Type)
+        switch (methodType)
         {
             case MethodType.Unary:
-                context.AddUnaryMethod(method, metadata, CreateUnaryHandler<TRequest, TResponse>(entry));
+                context.AddUnaryMethod(method, metadata, CreateUnaryHandler<TRequest, TResponse>(fullMethodName, methodType));
                 break;
 
             case MethodType.ServerStreaming:
-                context.AddServerStreamingMethod(method, metadata, CreateServerStreamingHandler<TRequest, TResponse>(entry));
+                context.AddServerStreamingMethod(method, metadata, CreateServerStreamingHandler<TRequest, TResponse>(fullMethodName, methodType));
                 break;
 
             case MethodType.ClientStreaming:
-                context.AddClientStreamingMethod(method, metadata, CreateClientStreamingHandler<TRequest, TResponse>(entry));
+                context.AddClientStreamingMethod(method, metadata, CreateClientStreamingHandler<TRequest, TResponse>(fullMethodName, methodType));
                 break;
 
             case MethodType.DuplexStreaming:
-                context.AddDuplexStreamingMethod(method, metadata, CreateDuplexStreamingHandler<TRequest, TResponse>(entry));
+                context.AddDuplexStreamingMethod(method, metadata, CreateDuplexStreamingHandler<TRequest, TResponse>(fullMethodName, methodType));
                 break;
         }
     }
 
     private UnaryServerMethod<MockGrpcService, TRequest, TResponse> CreateUnaryHandler<TRequest, TResponse>(
-        MethodEntry entry)
+        string fullMethodName, MethodType methodType)
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
         return async (_, request, context) =>
         {
             var headers = context.RequestHeaders;
-            var stub = _registry.FindMatch(entry.FullMethodName, request, headers);
+            var stub = _registry.FindMatch(fullMethodName, request, headers);
 
             if (stub is null)
             {
-                RecordCall<TRequest>(entry, request, _registry.UnmatchedStatus, matched: false);
+                RecordCall<TRequest>(fullMethodName, methodType, request, _registry.UnmatchedStatus, matched: false);
                 throw new RpcException(_registry.UnmatchedStatus);
             }
 
@@ -90,12 +90,12 @@ internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<Mock
                 await Task.Delay(stub.Delay, context.CancellationToken);
             }
 
-            if (stub.ResponseHeaders.Count > 0)
+            if (stub.ResponseHeaders is { Count: > 0 } responseHeaders)
             {
-                await context.WriteResponseHeadersAsync(stub.ResponseHeaders);
+                await context.WriteResponseHeadersAsync(responseHeaders);
             }
 
-            foreach (var trailer in stub.ResponseTrailers)
+            foreach (var trailer in stub.ResponseTrailers ?? Metadata.Empty)
             {
                 context.ResponseTrailers.Add(trailer);
             }
@@ -103,25 +103,25 @@ internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<Mock
             var handler = (UnaryHandler<TRequest, TResponse>)stub.Handler;
             var response = await handler(request, context);
 
-            RecordCall<TRequest>(entry, request, new Status(StatusCode.OK, string.Empty), matched: true);
+            RecordCall<TRequest>(fullMethodName, methodType, request, new Status(StatusCode.OK, string.Empty), matched: true);
 
             return response;
         };
     }
 
     private ServerStreamingServerMethod<MockGrpcService, TRequest, TResponse> CreateServerStreamingHandler<TRequest, TResponse>(
-        MethodEntry entry)
+        string fullMethodName, MethodType methodType)
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
         return async (_, request, responseStream, context) =>
         {
             var headers = context.RequestHeaders;
-            var stub = _registry.FindMatch(entry.FullMethodName, request, headers);
+            var stub = _registry.FindMatch(fullMethodName, request, headers);
 
             if (stub is null)
             {
-                RecordCall<TRequest>(entry, request, _registry.UnmatchedStatus, matched: false);
+                RecordCall<TRequest>(fullMethodName, methodType, request, _registry.UnmatchedStatus, matched: false);
                 throw new RpcException(_registry.UnmatchedStatus);
             }
 
@@ -130,12 +130,12 @@ internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<Mock
                 await Task.Delay(stub.Delay, context.CancellationToken);
             }
 
-            if (stub.ResponseHeaders.Count > 0)
+            if (stub.ResponseHeaders is { Count: > 0 } responseHeaders)
             {
-                await context.WriteResponseHeadersAsync(stub.ResponseHeaders);
+                await context.WriteResponseHeadersAsync(responseHeaders);
             }
 
-            foreach (var trailer in stub.ResponseTrailers)
+            foreach (var trailer in stub.ResponseTrailers ?? Metadata.Empty)
             {
                 context.ResponseTrailers.Add(trailer);
             }
@@ -143,12 +143,12 @@ internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<Mock
             var handler = (ServerStreamingHandler<TRequest, TResponse>)stub.Handler;
             await handler(request, responseStream, context);
 
-            RecordCall<TRequest>(entry, request, new Status(StatusCode.OK, string.Empty), matched: true);
+            RecordCall<TRequest>(fullMethodName, methodType, request, new Status(StatusCode.OK, string.Empty), matched: true);
         };
     }
 
     private ClientStreamingServerMethod<MockGrpcService, TRequest, TResponse> CreateClientStreamingHandler<TRequest, TResponse>(
-        MethodEntry entry)
+        string fullMethodName, MethodType methodType)
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
@@ -163,11 +163,11 @@ internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<Mock
                 firstMessage = requestStream.Current;
             }
 
-            var stub = _registry.FindMatch(entry.FullMethodName, firstMessage, headers);
+            var stub = _registry.FindMatch(fullMethodName, firstMessage, headers);
 
             if (stub is null)
             {
-                RecordCall<TRequest>(entry, firstMessage, _registry.UnmatchedStatus, matched: false);
+                RecordCall<TRequest>(fullMethodName, methodType, firstMessage, _registry.UnmatchedStatus, matched: false);
                 throw new RpcException(_registry.UnmatchedStatus);
             }
 
@@ -176,12 +176,12 @@ internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<Mock
                 await Task.Delay(stub.Delay, context.CancellationToken);
             }
 
-            if (stub.ResponseHeaders.Count > 0)
+            if (stub.ResponseHeaders is { Count: > 0 } responseHeaders)
             {
-                await context.WriteResponseHeadersAsync(stub.ResponseHeaders);
+                await context.WriteResponseHeadersAsync(responseHeaders);
             }
 
-            foreach (var trailer in stub.ResponseTrailers)
+            foreach (var trailer in stub.ResponseTrailers ?? Metadata.Empty)
             {
                 context.ResponseTrailers.Add(trailer);
             }
@@ -192,14 +192,14 @@ internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<Mock
             var wrappedStream = new PrependedStreamReader<TRequest>(firstMessage, requestStream);
             var response = await handler(wrappedStream, context);
 
-            RecordCall<TRequest>(entry, firstMessage, new Status(StatusCode.OK, string.Empty), matched: true);
+            RecordCall<TRequest>(fullMethodName, methodType, firstMessage, new Status(StatusCode.OK, string.Empty), matched: true);
 
             return response;
         };
     }
 
     private DuplexStreamingServerMethod<MockGrpcService, TRequest, TResponse> CreateDuplexStreamingHandler<TRequest, TResponse>(
-        MethodEntry entry)
+        string fullMethodName, MethodType methodType)
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
@@ -214,11 +214,11 @@ internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<Mock
                 firstMessage = requestStream.Current;
             }
 
-            var stub = _registry.FindMatch(entry.FullMethodName, firstMessage, headers);
+            var stub = _registry.FindMatch(fullMethodName, firstMessage, headers);
 
             if (stub is null)
             {
-                RecordCall<TRequest>(entry, firstMessage, _registry.UnmatchedStatus, matched: false);
+                RecordCall<TRequest>(fullMethodName, methodType, firstMessage, _registry.UnmatchedStatus, matched: false);
                 throw new RpcException(_registry.UnmatchedStatus);
             }
 
@@ -227,12 +227,12 @@ internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<Mock
                 await Task.Delay(stub.Delay, context.CancellationToken);
             }
 
-            if (stub.ResponseHeaders.Count > 0)
+            if (stub.ResponseHeaders is { Count: > 0 } responseHeaders)
             {
-                await context.WriteResponseHeadersAsync(stub.ResponseHeaders);
+                await context.WriteResponseHeadersAsync(responseHeaders);
             }
 
-            foreach (var trailer in stub.ResponseTrailers)
+            foreach (var trailer in stub.ResponseTrailers ?? Metadata.Empty)
             {
                 context.ResponseTrailers.Add(trailer);
             }
@@ -243,11 +243,11 @@ internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<Mock
             var wrappedStream = new PrependedStreamReader<TRequest>(firstMessage, requestStream);
             await handler(wrappedStream, responseStream, context);
 
-            RecordCall<TRequest>(entry, firstMessage, new Status(StatusCode.OK, string.Empty), matched: true);
+            RecordCall<TRequest>(fullMethodName, methodType, firstMessage, new Status(StatusCode.OK, string.Empty), matched: true);
         };
     }
 
-    private void RecordCall<TRequest>(MethodEntry entry, TRequest? request, Status status, bool matched)
+    private void RecordCall<TRequest>(string fullMethodName, MethodType methodType, TRequest? request, Status status, bool matched)
         where TRequest : class, IMessage<TRequest>, new()
     {
         if (!_options.RecordRequests)
@@ -262,8 +262,8 @@ internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<Mock
         }
 
         _log.Record(new RecordedCall(
-            entry.FullMethodName,
-            entry.Type,
+            fullMethodName,
+            methodType,
             new Metadata(),
             payloads.AsReadOnly(),
             status,
