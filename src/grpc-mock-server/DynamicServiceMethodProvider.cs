@@ -44,8 +44,7 @@ internal sealed class DynamicServiceMethodProvider : IServiceMethodProvider<Mock
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
-        var method = DynamicMethodFactory.CreateMethod<TRequest, TResponse>(
-            fullMethodName, methodType);
+        var method = DynamicMethodFactory.Create<TRequest, TResponse>(methodType, fullMethodName);
 
         var metadata = new List<object>();
 
