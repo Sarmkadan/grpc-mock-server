@@ -21,6 +21,7 @@ internal sealed partial class GrpcMockBuilder : IGrpcMockBuilder
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fullMethodName);
         MethodNames.Validate(fullMethodName);
         _registry.RegisterMethod(fullMethodName, MethodType.Unary, typeof(TRequest), typeof(TResponse));
         return new UnaryStubBuilder<TRequest, TResponse>(this, _registry, fullMethodName);
@@ -31,6 +32,7 @@ internal sealed partial class GrpcMockBuilder : IGrpcMockBuilder
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fullMethodName);
         MethodNames.Validate(fullMethodName);
         _registry.RegisterMethod(fullMethodName, MethodType.ServerStreaming, typeof(TRequest), typeof(TResponse));
         return new ServerStreamingStubBuilder<TRequest, TResponse>(this, _registry, fullMethodName);
@@ -41,6 +43,7 @@ internal sealed partial class GrpcMockBuilder : IGrpcMockBuilder
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fullMethodName);
         MethodNames.Validate(fullMethodName);
         _registry.RegisterMethod(fullMethodName, MethodType.ClientStreaming, typeof(TRequest), typeof(TResponse));
         return new ClientStreamingStubBuilder<TRequest, TResponse>(this, _registry, fullMethodName);
@@ -51,6 +54,7 @@ internal sealed partial class GrpcMockBuilder : IGrpcMockBuilder
         where TRequest : class, IMessage<TRequest>, new()
         where TResponse : class, IMessage<TResponse>, new()
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fullMethodName);
         MethodNames.Validate(fullMethodName);
         _registry.RegisterMethod(fullMethodName, MethodType.DuplexStreaming, typeof(TRequest), typeof(TResponse));
         return new DuplexStreamingStubBuilder<TRequest, TResponse>(this, _registry, fullMethodName);
@@ -59,13 +63,24 @@ internal sealed partial class GrpcMockBuilder : IGrpcMockBuilder
     /// <inheritdoc />
     public IUnaryStubBuilder<byte[], byte[]> ForRaw(string fullMethodName, MethodType type = MethodType.Unary)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fullMethodName);
         MethodNames.Validate(fullMethodName);
+        if (!Enum.IsDefined(type))
+        {
+            throw new ArgumentOutOfRangeException(nameof(type), type, "Must be a defined MethodType value.");
+        }
+
         throw new NotImplementedException();
     }
 
     /// <inheritdoc />
     public IGrpcMockBuilder OnUnmatched(Status status)
     {
+        if (status.StatusCode == StatusCode.OK)
+        {
+            throw new ArgumentException("An unmatched call cannot succeed; use a non-OK status code.", nameof(status));
+        }
+
         _registry.UnmatchedStatus = status;
         return this;
     }

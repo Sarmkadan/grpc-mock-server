@@ -7,13 +7,12 @@ namespace GrpcMockServer;
 /// </summary>
 internal static class MethodNames
 {
-    private static readonly Regex _pattern = new(
-        @"^[A-Za-z_][A-Za-z0-9_.]*/[A-Za-z_][A-Za-z0-9_]*\z",
-        RegexOptions.CultureInvariant);
+    private static readonly Regex _identifier = new(@"^[A-Za-z_][A-Za-z0-9_]*\z", RegexOptions.CultureInvariant);
 
     /// <summary>
-    /// Throws unless <paramref name="fullMethodName"/> is in the form <c>package.Service/Method</c>
-    /// (no leading slash, exactly one slash).
+    /// Throws unless <paramref name="fullMethodName"/> is in the form <c>package.Service/Method</c>:
+    /// no leading slash, exactly one slash, and non-empty dot-separated service segments and a method segment
+    /// made of letters, digits and underscores.
     /// </summary>
     /// <param name="fullMethodName">Full method name to check.</param>
     /// <exception cref="ArgumentNullException"><paramref name="fullMethodName"/> is null.</exception>
@@ -22,11 +21,57 @@ internal static class MethodNames
     {
         ArgumentNullException.ThrowIfNull(fullMethodName);
 
-        if (!_pattern.IsMatch(fullMethodName))
+        if (fullMethodName.Length == 0)
         {
-            throw new ArgumentException(
-                $"'{fullMethodName}' is not a valid full method name; expected 'package.Service/Method' without a leading slash.",
-                nameof(fullMethodName));
+            throw Invalid(fullMethodName, "must not be empty");
+        }
+
+        if (fullMethodName[0] == '/')
+        {
+            throw Invalid(fullMethodName, "must not start with '/'; use 'package.Service/Method'");
+        }
+
+        var slashes = fullMethodName.Count(c => c == '/');
+        if (slashes == 0)
+        {
+            throw Invalid(fullMethodName, "is missing the '/' between the service and the method; use 'package.Service/Method'");
+        }
+
+        if (slashes > 1)
+        {
+            throw Invalid(fullMethodName, $"contains {slashes} '/' characters; exactly one is allowed");
+        }
+
+        var slash = fullMethodName.IndexOf('/');
+        var service = fullMethodName[..slash];
+        var method = fullMethodName[(slash + 1)..];
+
+        if (service.Length == 0)
+        {
+            throw Invalid(fullMethodName, "has an empty service name before '/'");
+        }
+
+        if (method.Length == 0)
+        {
+            throw Invalid(fullMethodName, "has an empty method name after '/'");
+        }
+
+        foreach (var segment in service.Split('.'))
+        {
+            if (segment.Length == 0)
+            {
+                throw Invalid(fullMethodName, "has an empty package or service segment (consecutive or leading/trailing '.')");
+            }
+
+            if (!_identifier.IsMatch(segment))
+            {
+                throw Invalid(fullMethodName, $"has an invalid service segment '{segment}'; use letters, digits and '_', not starting with a digit");
+            }
+        }
+
+        if (!_identifier.IsMatch(method))
+        {
+            throw Invalid(fullMethodName, $"has an invalid method name '{method}'; use letters, digits and '_', not starting with a digit");
         }
     }
 
@@ -41,4 +86,7 @@ internal static class MethodNames
         var slash = fullMethodName.IndexOf('/');
         return (fullMethodName[..slash], fullMethodName[(slash + 1)..]);
     }
+
+    private static ArgumentException Invalid(string fullMethodName, string problem) =>
+        new($"'{fullMethodName}' is not a valid full method name: it {problem}.", "fullMethodName");
 }

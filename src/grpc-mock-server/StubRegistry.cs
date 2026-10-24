@@ -43,10 +43,12 @@ internal sealed class StubRegistry
 
     /// <summary>
     /// Registers a method. Registering the same method again is a no-op; registering it with a
-    /// different <see cref="MethodType"/> throws. After <see cref="Seal"/> only already-known methods are accepted.
+    /// different <see cref="MethodType"/> or request/response type pair throws. After <see cref="Seal"/> only
+    /// already-known methods are accepted.
     /// </summary>
     /// <exception cref="InvalidOperationException">
-    /// The method is already registered with another type, or the registry is sealed and the method is unknown.
+    /// The method is already declared with another method type or request/response types, or the registry is
+    /// sealed and the method is unknown.
     /// </exception>
     public void RegisterMethod(string fullMethodName, MethodType type, Type requestType, Type responseType)
     {
@@ -58,10 +60,12 @@ internal sealed class StubRegistry
         {
             if (_methods.TryGetValue(fullMethodName, out var existing))
             {
-                if (existing.Type != type)
+                if (existing.Type != type || existing.RequestType != requestType || existing.ResponseType != responseType)
                 {
                     throw new InvalidOperationException(
-                        $"Method '{fullMethodName}' is already registered as {existing.Type}; cannot register it as {type}.");
+                        $"Method '{fullMethodName}' is already declared as {existing.Type} " +
+                        $"({existing.RequestType.FullName} -> {existing.ResponseType.FullName}); " +
+                        $"cannot redeclare it as {type} ({requestType.FullName} -> {responseType.FullName}).");
                 }
 
                 return;
