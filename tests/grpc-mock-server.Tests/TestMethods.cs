@@ -54,6 +54,20 @@ internal static class TestMethods
     public const string EchoStreamFullName = "e2e.v1.Echo/Stream";
 
     /// <summary>
+    /// Builds a unary <see cref="Method{TRequest,TResponse}"/> for the given service and method name.
+    /// </summary>
+    /// <typeparam name="TRequest">Request message type.</typeparam>
+    /// <typeparam name="TResponse">Response message type.</typeparam>
+    /// <param name="service">Fully qualified service name, e.g. <c>hdr.v1.Svc</c>.</param>
+    /// <param name="method">Method name within the service, e.g. <c>Get</c>.</param>
+    public static Method<TRequest, TResponse> Unary<TRequest, TResponse>(string service, string method)
+        where TRequest : class, IMessage<TRequest>, new()
+        where TResponse : class, IMessage<TResponse>, new()
+    {
+        return Create<TRequest, TResponse>(MethodType.Unary, service, method);
+    }
+
+    /// <summary>
     /// Builds a server-streaming <see cref="Method{TRequest,TResponse}"/> for the given service and method name.
     /// Marshallers are derived from each message type's protobuf parser, so no generated code is needed.
     /// </summary>
