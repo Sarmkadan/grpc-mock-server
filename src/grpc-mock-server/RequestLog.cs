@@ -55,11 +55,13 @@ internal sealed class RequestLog : IRequestLog
     /// <inheritdoc />
     public void VerifyCalled(string fullMethodName, int expectedCount)
     {
-        var actual = For(fullMethodName).Count;
+        var snapshot = _calls.ToArray();
+        var actual = snapshot.Count(c => c.FullMethodName == fullMethodName);
         if (actual != expectedCount)
         {
             throw new GrpcMockVerificationException(
-                $"Expected {expectedCount} call(s) to '{fullMethodName}', but got {actual}.");
+                $"Expected {fullMethodName} to be called {expectedCount} time(s) but was called {actual} time(s). " +
+                $"Recorded calls:{Environment.NewLine}{FormatCalls(snapshot)}");
         }
     }
 
@@ -67,34 +69,73 @@ internal sealed class RequestLog : IRequestLog
     public void VerifyCalledWith<TRequest>(string fullMethodName, Func<TRequest, bool> predicate)
         where TRequest : class, IMessage<TRequest>, new()
     {
-        var requests = RequestsFor<TRequest>(fullMethodName);
-        if (!requests.Any(predicate))
+        ArgumentNullException.ThrowIfNull(predicate);
+
+        var snapshot = _calls.ToArray();
+        var found = snapshot
+            .Where(c => c.FullMethodName == fullMethodName && c.RequestPayloads.Count > 0)
+            .Any(c => Deserialize<TRequest>(c.RequestPayloads[0]) is { } request && predicate(request));
+        if (!found)
         {
             throw new GrpcMockVerificationException(
-                $"No call to '{fullMethodName}' matched the predicate. {requests.Count} call(s) recorded.");
+                $"Expected a call to {fullMethodName} with a request matching the predicate, but none matched. " +
+                $"Recorded calls:{Environment.NewLine}{FormatCalls(snapshot)}");
         }
     }
 
     /// <inheritdoc />
     public void VerifyNotCalled(string fullMethodName)
     {
-        var count = For(fullMethodName).Count;
-        if (count > 0)
+        var snapshot = _calls.ToArray();
+        var actual = snapshot.Count(c => c.FullMethodName == fullMethodName);
+        if (actual > 0)
         {
             throw new GrpcMockVerificationException(
-                $"Expected no calls to '{fullMethodName}', but got {count}.");
+                $"Expected {fullMethodName} not to be called but was called {actual} time(s). " +
+                $"Recorded calls:{Environment.NewLine}{FormatCalls(snapshot)}");
         }
     }
 
     /// <inheritdoc />
     public void VerifyNoUnmatchedCalls()
     {
-        var unmatched = _calls.Where(c => !c.Matched).ToArray();
-        if (unmatched.Length > 0)
+        var snapshot = _calls.ToArray();
+        var unmatched = snapshot.Count(c => !c.Matched);
+        if (unmatched > 0)
         {
             throw new GrpcMockVerificationException(
-                $"{unmatched.Length} unmatched call(s): {string.Join(", ", unmatched.Select(c => c.FullMethodName))}");
+                $"Expected every call to match a stub but {unmatched} call(s) did not. " +
+                $"Recorded calls:{Environment.NewLine}{FormatCalls(snapshot)}");
         }
+    }
+
+    /// <summary>
+    /// Deserializes the first request payload. Returns <c>null</c> when the bytes are not a valid
+    /// <typeparamref name="TRequest"/>, so a malformed payload is skipped rather than failing verification.
+    /// </summary>
+    private static TRequest? Deserialize<TRequest>(ReadOnlyMemory<byte> payload)
+        where TRequest : class, IMessage<TRequest>, new()
+    {
+        var msg = new TRequest();
+        try
+        {
+            msg.MergeFrom(payload.Span);
+            return msg;
+        }
+        catch (InvalidProtocolBufferException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Renders one line per call for verification failure messages.</summary>
+    private static string FormatCalls(IEnumerable<RecordedCall> calls)
+    {
+        var lines = calls.Select(c =>
+            $"  [{c.ReceivedAt:o}] {c.Type} {c.FullMethodName} status={c.Status.StatusCode} " +
+            $"matched={c.Matched} payloads={c.RequestPayloads.Count}").ToArray();
+
+        return lines.Length == 0 ? "  (no calls recorded)" : string.Join(Environment.NewLine, lines);
     }
 
     /// <inheritdoc />
